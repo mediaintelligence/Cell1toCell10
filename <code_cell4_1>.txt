@@ -1,0 +1,277 @@
+# Cell 4.1: Data Dictionary Population (Fixed v2)
+# NOTE: Remediation Report suggests merging this with 4.2. This version is standalone but includes fixes.
+#       Assumes it runs after Cell 3 and processes 'clean_*' tables.
+
+import logging
+import time
+import os
+import re # For filtering tables
+from google.cloud import bigquery
+from google.api_core import exceptions, retry
+from google.cloud.bigquery.table import TableListItem # Correct import
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm # For progress bar
+import random
+import hashlib
+import json
+from datetime import datetime # For timestamp
+from typing import Dict, List, Any, Optional, Union, Tuple
+from tenacity import retry as tenacity_retry, stop_after_attempt, wait_exponential, retry_if_exception_type as tenacity_if_exception_type
+
+
+# --- Logging Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s')
+logger = logging.getLogger(__name__)
+logging.getLogger('google.api_core').setLevel(logging.WARNING)
+logging.getLogger('google.auth').setLevel(logging.WARNING)
+logging.getLogger('google.cloud').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# --- Configuration ---
+PROJECT_ID = os.environ.get('PROJECT_ID', "spry-bus-425315-p6")
+DATASET_ID = os.environ.get('DATASET_ID', "mycocoons")
+# Table name for the dictionary itself
+DATA_DICTIONARY_TABLE_NAME = os.environ.get('DATA_DICTIONARY_TABLE', "data_dictionary")
+FULL_DATA_DICTIONARY_TABLE_ID = f"{PROJECT_ID}.{DATASET_ID}.{DATA_DICTIONARY_TABLE_NAME}"
+# Pattern to identify tables to include in the dictionary (e.g., cleaned tables)
+TABLE_INCLUDE_PATTERN = r'^clean_.*' # Process tables starting with 'clean_'
+
+# --- Retry Configuration ---
+RETRYABLE_EXCEPTIONS_TENACITY = (
+    exceptions.GoogleAPIError, ConnectionError, TimeoutError, exceptions.BadRequest
+)
+def retry_with_backoff_tenacity(retries=3, backoff_in_seconds=1, max_wait=10, retry_exceptions=RETRYABLE_EXCEPTIONS_TENACITY):
+    """Returns a tenacity retry decorator with exponential backoff."""
+    if not isinstance(retry_exceptions, tuple): retry_exceptions = (retry_exceptions,)
+    return tenacity_retry(
+        retry=tenacity_if_exception_type(retry_exceptions), stop=stop_after_attempt(retries),
+        wait=wait_exponential(multiplier=backoff_in_seconds, min=1, max=max_wait),
+        before_sleep=lambda rs: logger.warning(f"Retrying {rs.fn.__name__} due to {rs.outcome.exception()} (attempt {rs.attempt_number})"),
+        reraise=True
+    )
+
+# --- GCP Clients ---
+bq_client: Optional[bigquery.Client] = None
+
+def initialize_client(max_retries=3):
+    """Initialize BigQuery client with retry logic."""
+    global bq_client
+    if bq_client: return
+    logger.info("Attempting to initialize BigQuery client...")
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            bq_client = bigquery.Client(project=PROJECT_ID)
+            bq_client.list_datasets(max_results=1)
+            logger.info("Successfully initialized BigQuery client")
+            return
+        except Exception as e:
+            retry_count += 1
+            wait_time = 2 ** retry_count
+            logger.warning(f"Error initializing BigQuery client: {e}. Retrying in {wait_time} seconds. Attempt {retry_count}/{max_retries}")
+            time.sleep(wait_time)
+    logger.error("Failed to initialize BigQuery client after multiple attempts.")
+    raise RuntimeError("Failed to initialize BigQuery client")
+
+# --- Service Functions ---
+
+@retry_with_backoff_tenacity()
+def create_data_dictionary_table():
+    """Creates the data dictionary table if it doesn't exist."""
+    if bq_client is None: raise RuntimeError("BigQuery client not initialized.")
+
+    schema = [
+        bigquery.SchemaField("table_name", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("column_name", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("data_type", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("mode", "STRING"),
+        bigquery.SchemaField("description", "STRING"),
+        bigquery.SchemaField("schema_hash", "STRING"),
+        bigquery.SchemaField("last_captured_at", "TIMESTAMP", mode="REQUIRED"),
+    ]
+    table = bigquery.Table(FULL_DATA_DICTIONARY_TABLE_ID, schema=schema)
+    table.time_partitioning = bigquery.TimePartitioning(field="last_captured_at", type_="DAY")
+    table.clustering_fields = ["table_name"]
+
+    try:
+        bq_client.get_table(FULL_DATA_DICTIONARY_TABLE_ID)
+        logger.info(f"Data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} already exists.")
+    except exceptions.NotFound:
+        logger.info(f"Data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} not found. Creating...")
+        try:
+            bq_client.create_table(table)
+            logger.info(f"Created data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID}")
+        except exceptions.Conflict:
+            logger.info(f"Data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} was created by another process.")
+        except Exception as e: logger.error(f"Error creating data dictionary table: {e}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error checking/creating data dictionary table: {e}", exc_info=True); raise
+
+def calculate_schema_hash(schema: List[bigquery.SchemaField]) -> str:
+    """Calculates an MD5 hash of the table schema structure."""
+    schema_repr = sorted([
+        {"name": field.name, "type": field.field_type, "mode": field.mode}
+        for field in schema
+    ], key=lambda x: x['name'])
+    schema_json = json.dumps(schema_repr, sort_keys=True)
+    return hashlib.md5(schema_json.encode('utf-8')).hexdigest()
+
+def extract_schema_info(table: bigquery.Table) -> Tuple[List[Dict[str, Any]], str]:
+    """Extracts schema information and calculates schema hash from a BigQuery table."""
+    table_id = table.table_id
+    schema = table.schema
+    capture_ts = datetime.utcnow()
+    rows_to_insert = []
+    if not schema: logger.warning(f"Table {table_id} has no schema defined."); return [], ""
+    schema_hash = calculate_schema_hash(schema)
+    for field in schema:
+        if not hasattr(field, 'name') or not hasattr(field, 'field_type'): continue
+        rows_to_insert.append({
+            "table_name": table_id, "column_name": field.name,
+            "data_type": field.field_type, "mode": field.mode,
+            "description": field.description or "", "schema_hash": schema_hash,
+            "last_captured_at": capture_ts.isoformat(),
+        })
+    return rows_to_insert, schema_hash
+
+@retry_with_backoff_tenacity()
+def insert_rows_to_data_dictionary(rows: List[Dict[str, Any]], table_id_processed: str) -> None:
+    """Inserts schema rows into the data dictionary table using streaming insert."""
+    if bq_client is None: raise RuntimeError("BigQuery client not initialized.")
+    if not rows: logger.debug(f"No rows to insert for table {table_id_processed}."); return
+
+    try:
+        errors = bq_client.insert_rows_json(FULL_DATA_DICTIONARY_TABLE_ID, rows, skip_invalid_rows=False)
+        if errors:
+            error_count = sum(len(e.get('errors', [])) for e in errors)
+            logger.error(f"Encountered {error_count} errors inserting rows for {table_id_processed} into data dictionary: {errors}")
+            raise GoogleAPIError(f"{error_count} errors during data dictionary insert.")
+        else:
+            logger.debug(f"Successfully inserted {len(rows)} schema rows for table {table_id_processed} into {DATA_DICTIONARY_TABLE_NAME}")
+    except Exception as e:
+        logger.error(f"Error inserting rows for table {table_id_processed} into data dictionary: {e}", exc_info=True)
+        raise
+
+@retry_with_backoff_tenacity()
+def get_existing_schema_hashes() -> Dict[str, str]:
+    """Retrieves the latest schema hash for each table currently in the data dictionary."""
+    if bq_client is None: raise RuntimeError("BigQuery client not initialized.")
+    existing_hashes = {}
+    query = f"""
+        SELECT table_name, schema_hash
+        FROM `{FULL_DATA_DICTIONARY_TABLE_ID}`
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY last_captured_at DESC) = 1
+    """
+    try:
+        query_job = bq_client.query(query)
+        for row in query_job.result(timeout=120): existing_hashes[row.table_name] = row.schema_hash
+        logger.info(f"Retrieved existing schema hashes for {len(existing_hashes)} tables from data dictionary.")
+        return existing_hashes
+    except exceptions.NotFound:
+        logger.warning(f"Data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} not found while fetching hashes. Assuming no existing hashes.")
+        return {}
+    except Exception as e: logger.error(f"Error retrieving existing schema hashes: {e}", exc_info=True); raise
+
+# @retry_with_backoff_tenacity() # Retry logic is handled within called functions
+def process_table_schema(table_item: TableListItem, existing_hashes: Dict[str, str]) -> Tuple[str, bool, Optional[str]]:
+    """Processes a single table: gets schema, compares hash, inserts if new/changed."""
+    if bq_client is None: return table_item.table_id, False, "Client not initialized"
+
+    table_id = table_item.table_id
+    full_table_id_path = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
+    logger.debug(f"Processing schema for table: {table_id}")
+
+    try:
+        table = bq_client.get_table(full_table_id_path)
+        rows_to_insert, current_schema_hash = extract_schema_info(table)
+        if not rows_to_insert or not current_schema_hash:
+            return table_id, True, "Skipped (No Schema)"
+
+        existing_hash = existing_hashes.get(table_id)
+        if existing_hash == current_schema_hash:
+            logger.debug(f"Schema for table {table_id} has not changed (Hash: {current_schema_hash[:8]}...). Skipping insert.")
+            return table_id, True, "Skipped (Schema Unchanged)"
+        else:
+            if existing_hash: logger.info(f"Schema change detected for table {table_id}. Updating dictionary.")
+            else: logger.info(f"New table {table_id} detected. Adding schema to dictionary.")
+            insert_rows_to_data_dictionary(rows_to_insert, table_id)
+            return table_id, True, None # Success
+
+    except exceptions.NotFound:
+        logger.warning(f"Table {table_id} not found during schema processing. It may have been deleted.")
+        return table_id, True, "Skipped (Not Found)"
+    except Exception as e:
+        error_message = f"Error processing schema for table {table_id}: {e}"
+        logger.exception(error_message)
+        return table_id, False, error_message
+
+def process_schemas_in_parallel(max_workers=5):
+    """Processes schemas for relevant tables in the dataset in parallel."""
+    if bq_client is None: raise RuntimeError("BigQuery client not initialized.")
+
+    processed_count = 0; success_count = 0; skipped_count = 0; failed_count = 0
+    start_time = time.time()
+
+    try:
+        logger.info(f"Listing tables in dataset {PROJECT_ID}.{DATASET_ID} matching pattern '{TABLE_INCLUDE_PATTERN}'...")
+        tables_iterator = bq_client.list_tables(DATASET_ID)
+        # Filter for actual tables matching the include pattern (e.g., clean_*)
+        pattern = re.compile(TABLE_INCLUDE_PATTERN, re.IGNORECASE)
+        tables_to_process = [
+            table for table in tables_iterator
+            if table.table_type == 'TABLE' and pattern.match(table.table_id)
+        ]
+
+        if not tables_to_process:
+            logger.warning(f"No tables found in dataset {DATASET_ID} matching pattern '{TABLE_INCLUDE_PATTERN}'.")
+            return
+
+        total_tables = len(tables_to_process)
+        logger.info(f"Found {total_tables} tables matching pattern to process.")
+
+        existing_hashes = get_existing_schema_hashes()
+
+        logger.info(f"Starting parallel schema processing for {total_tables} tables with {max_workers} workers...")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_table_schema, table, existing_hashes): table.table_id for table in tables_to_process}
+            for future in tqdm(as_completed(futures), total=total_tables, desc="Processing Schemas"):
+                table_id = futures[future]
+                processed_count += 1
+                try:
+                    origin_table_id, success, message = future.result()
+                    if success:
+                        if message and "Skipped" in message: skipped_count += 1
+                        else: success_count += 1
+                    else: failed_count += 1; logger.error(f"FAILED: {origin_table_id} - {message}")
+                except Exception as e:
+                    failed_count += 1; logger.error(f"FAILED (Future Error): {table_id} - {e}", exc_info=True)
+
+    except Exception as e:
+        logger.error(f"An error occurred during parallel schema processing setup or listing: {e}", exc_info=True)
+    finally:
+        end_time = time.time()
+        logger.info(f"Finished schema processing in {end_time - start_time:.2f} seconds.")
+        logger.info(f"Summary: Processed: {processed_count}, Success/Updated: {success_count}, Skipped: {skipped_count}, Failed: {failed_count}")
+
+def validate_environment():
+    """Validates the environment configuration needed for this cell."""
+    if not PROJECT_ID or not DATASET_ID or not DATA_DICTIONARY_TABLE_NAME:
+        logger.critical("Missing required environment configuration (PROJECT_ID, DATASET_ID, DATA_DICTIONARY_TABLE). Exiting.")
+        return False
+    return True
+
+def main():
+    """Main function to run the data dictionary population."""
+    global bq_client
+    logger.info("Starting Data Dictionary Population (Cell 4.1)...")
+    if not validate_environment(): return
+
+    try:
+        initialize_client()
+        create_data_dictionary_table()
+        process_schemas_in_parallel(max_workers=5)
+        logger.info("Data Dictionary Population (Cell 4.1) finished.")
+    except Exception as e:
+        logger.critical(f"A critical error occurred in the main data dictionary process: {e}", exc_info=True)
+
+if __name__ == "__main__":
+    main()

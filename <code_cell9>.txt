@@ -1,0 +1,43 @@
+#Cell 9: Relationship Creation
+
+def create_relationships():
+    """Creates relationships between nodes in the Neo4j graph."""
+    try:
+        with driver.session() as session:
+            # Create relationships between FacebookAd and WebsiteVisit nodes
+            cypher_query = """
+                MATCH (a:FacebookAd)
+                MATCH (v:WebsiteVisit)
+                WHERE a.ad_campaign_id = v.traffic_campaign
+                MERGE (a)-[:DRIVES]->(v)
+            """
+            session.run(cypher_query)
+            logger.info("Relationships created between FacebookAd and WebsiteVisit nodes.")
+
+            # Create relationships between GoogleAd and WebsiteVisit nodes
+            cypher_query = """
+                MATCH (a:GoogleAd)
+                MATCH (v:WebsiteVisit)
+                WHERE a.ad_group_campaign_id = v.traffic_campaign
+                MERGE (a)-[:DRIVES]->(v)
+            """
+            session.run(cypher_query)
+            logger.info("Relationships created between GoogleAd and WebsiteVisit nodes.")
+
+            # Create relationships between WebsiteVisit and Order nodes
+            cypher_query = """
+                MATCH (v:WebsiteVisit)
+                MATCH (o:Order)
+                WHERE v.visitor_id = o.customer_id
+                MERGE (v)-[:RESULTS_IN]->(o)
+            """
+            session.run(cypher_query)
+            logger.info("Relationships created between WebsiteVisit and Order nodes.")
+
+        logger.info("Relationship creation in Neo4j completed.")
+    except Exception as e:
+        logger.error("Error occurred while creating relationships in Neo4j.")
+        logger.error(str(e))
+
+# Create relationships
+create_relationships()

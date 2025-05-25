@@ -1,0 +1,103 @@
+#Cell 7: Attribution Modeling
+def attribution_modeling():
+    """Performs attribution modeling on the Google Analytics data."""
+    try:
+        query = f"""
+            WITH user_journeys AS (
+                SELECT
+                    fullVisitorId,
+                    visitId,
+                    channelGrouping,
+                    hits.transaction.transactionId AS transaction_id,
+                    hits.transaction.transactionRevenue / 1000000 AS revenue
+                FROM `{dataset_id}.GAWA_SESSIONS_cleaned`, UNNEST(hits) AS hits
+                WHERE hits.transaction.transactionId IS NOT NULL
+            ),
+            channel_conversions AS (
+                SELECT
+                    channelGrouping,
+                    COUNT(DISTINCT transaction_id) AS conversions,
+                    SUM(revenue) AS revenue
+                FROM user_journeys
+                GROUP BY channelGrouping
+            ),
+            last_click_attribution AS (
+                SELECT
+                    channelGrouping,
+                    COUNT(DISTINCT transaction_id) AS last_click_conversions,
+                    SUM(revenue) AS last_click_revenue
+                FROM (
+                    SELECT
+                        fullVisitorId,
+                        transaction_id,
+                        revenue,
+                        LAST_VALUE(channelGrouping) OVER (
+                            PARTITION BY fullVisitorId, transaction_id
+                            ORDER BY visitId
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                        ) AS channelGrouping
+                    FROM user_journeys
+                )
+                GROUP BY channelGrouping
+            ),
+            first_click_attribution AS (
+                SELECT
+                    channelGrouping,
+                    COUNT(DISTINCT transaction_id) AS first_click_conversions,
+                    SUM(revenue) AS first_click_revenue
+                FROM (
+                    SELECT
+                        fullVisitorId,
+                        transaction_id,
+                        revenue,
+                        FIRST_VALUE(channelGrouping) OVER (
+                            PARTITION BY fullVisitorId, transaction_id
+                            ORDER BY visitId
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                        ) AS channelGrouping
+                    FROM user_journeys
+                )
+                GROUP BY channelGrouping
+            ),
+            linear_attribution AS (
+                SELECT
+                    channelGrouping,
+                    COUNT(DISTINCT transaction_id) AS linear_conversions,
+                    SUM(revenue) AS linear_revenue
+                FROM (
+                    SELECT
+                        fullVisitorId,
+                        transaction_id,
+                        channelGrouping,
+                        revenue / COUNT(DISTINCT channelGrouping) OVER (
+                            PARTITION BY fullVisitorId, transaction_id
+                        ) AS revenue
+                    FROM user_journeys
+                )
+                GROUP BY channelGrouping
+            )
+            SELECT
+                channel_conversions.channelGrouping,
+                channel_conversions.conversions AS total_conversions,
+                channel_conversions.revenue AS total_revenue,
+                last_click_attribution.last_click_conversions,
+                last_click_attribution.last_click_revenue,
+                first_click_attribution.first_click_conversions,
+                first_click_attribution.first_click_revenue,
+                linear_attribution.linear_conversions,
+                linear_attribution.linear_revenue
+            FROM channel_conversions
+            LEFT JOIN last_click_attribution ON channel_conversions.channelGrouping = last_click_attribution.channelGrouping
+            LEFT JOIN first_click_attribution ON channel_conversions.channelGrouping = first_click_attribution.channelGrouping
+            LEFT JOIN linear_attribution ON channel_conversions.channelGrouping = linear_attribution.channelGrouping
+            ORDER BY total_conversions DESC
+        """
+        query_job = client.query(query)
+        results = query_job.result()
+        
+        print("Channel | Total Conv | Total Rev | Last Click Conv | Last Click Rev | First Click Conv | First Click Rev | Linear Conv | Linear Rev")
+        print("--------|------------|-----------|-----------------|----------------|------------------|-----------------|-------------|------------")
+        for row in results:
+            print(f"{row['channelGrouping']} | {row['total_conversions']} | {row['total_revenue']} | {row['last_click_conversions']} | {row['last_click_revenue']} | {row['first_click_conversions']} | {row['first_click_revenue']} | {row['linear_conversions']} | {row['linear_revenue']}")
+    except Exception as e:
+        logger.error(f"Error performing attribution modeling: {str(e)}")

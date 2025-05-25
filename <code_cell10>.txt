@@ -1,0 +1,57 @@
+#Cell 10: Main Pipeline Execution
+
+def main():
+    """Orchestrates the entire data pipeline."""
+    try:
+        # Check if the dataset exists, create it if it doesn't
+        try:
+            client.get_dataset(dataset_id)
+            logger.info(f"Dataset {dataset_id} already exists.")
+        except NotFound:
+            create_dataset()
+
+        folders = ['Facebook', 'GA4Custom', 'GAAnalytics', 'Google', 'Shopify']
+
+        for folder in folders:
+            csv_files = get_csv_files(bucket_name, prefix=folder)
+
+            for file_path in csv_files:
+                schema = infer_schema(file_path)
+                load_csv_to_bigquery(file_path, schema)
+
+        # Dynamically discover table names from the BigQuery dataset
+        table_ids = [table.table_id for table in client.list_tables(dataset_id)]
+
+        # Create data dictionary and document data lineage for each table
+        for table_id in table_ids:
+            create_data_dictionary(table_id)
+            document_data_lineage(table_id)
+
+        # Perform customer journey analysis
+        logger.info("Performing funnel analysis...")
+        funnel_analysis()
+
+        logger.info("Performing segmentation and cohort analysis...")
+        segmentation_cohort_analysis()
+
+        logger.info("Performing attribution modeling...")
+        attribution_modeling()
+
+        # Export data to Neo4j
+        for table_id in table_ids:
+            logger.info(f"Exporting data to Neo4j for table: {table_id}")
+            export_to_neo4j(table_id)
+            logger.info(f"Data export completed for table: {table_id}")
+
+        # Create relationships in Neo4j
+        logger.info("Creating relationships in Neo4j...")
+        create_relationships()
+        logger.info("Relationship creation completed.")
+
+        logger.info("Data pipeline execution completed successfully.")
+    except Exception as e:
+        logger.error("Error occurred in the main function.")
+        logger.error(str(e))
+
+if __name__ == "__main__":
+    main()

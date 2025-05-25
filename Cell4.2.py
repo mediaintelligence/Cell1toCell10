@@ -1,0 +1,456 @@
+## Cell 4.2: Data Catalog Integration (Fixed v4 - BQ Query Mode Error)
+# NOTE: Remediation Report suggests merging this with 4.1. This version is standalone.
+#       Assumes it runs after Cell 4.1 and reads from the data_dictionary table.
+
+import logging
+import re
+import hashlib
+import os
+import time
+import random
+from google.cloud import bigquery
+# *** FIX: Correct Data Catalog imports ***
+from google.cloud.datacatalog_v1 import DataCatalogClient, types
+from google.api_core import exceptions, retry
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+from typing import Dict, List, Any, Optional, Union, Tuple
+from collections import defaultdict
+from tenacity import retry as tenacity_retry, stop_after_attempt, wait_exponential, retry_if_exception_type as tenacity_if_exception_type
+
+# --- Logging Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s') # Changed module to filename for clarity
+logger = logging.getLogger(__name__)
+logging.getLogger('google.api_core').setLevel(logging.WARNING)
+logging.getLogger('google.auth').setLevel(logging.WARNING)
+logging.getLogger('google.cloud').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# --- Configuration ---
+PROJECT_ID = os.environ.get('PROJECT_ID', "spry-bus-425315-p6")
+# Location for Data Catalog Entry Group (must be a valid DC region)
+LOCATION = os.environ.get('LOCATION', "us-central1")
+DATASET_ID = os.environ.get('DATASET_ID', "mycocoons")
+ENTRY_GROUP_ID = os.environ.get('ENTRY_GROUP_ID', "mycocoons_data_dictionary")
+# Data dictionary table name (must match Cell 4.1)
+DATA_DICTIONARY_TABLE_NAME = os.environ.get('DATA_DICTIONARY_TABLE', "data_dictionary")
+FULL_DATA_DICTIONARY_TABLE_ID = f"{PROJECT_ID}.{DATASET_ID}.{DATA_DICTIONARY_TABLE_NAME}"
+
+# --- Retry Configuration ---
+RETRYABLE_EXCEPTIONS_TENACITY = (
+    exceptions.GoogleAPIError, ConnectionError, TimeoutError,
+    exceptions.ServiceUnavailable, # Added ServiceUnavailable
+    exceptions.DeadlineExceeded   # Added DeadlineExceeded
+    # Removed BadRequest as it indicates a persistent query/request issue, not transient
+)
+def retry_with_backoff_tenacity(retries=3, backoff_in_seconds=1, max_wait=10, retry_exceptions=RETRYABLE_EXCEPTIONS_TENACITY):
+    """Returns a tenacity retry decorator with exponential backoff."""
+    if not isinstance(retry_exceptions, tuple): retry_exceptions = (retry_exceptions,)
+    return tenacity_retry(
+        retry=tenacity_if_exception_type(retry_exceptions), stop=stop_after_attempt(retries),
+        wait=wait_exponential(multiplier=backoff_in_seconds, min=1, max=max_wait),
+        before_sleep=lambda rs: logger.warning(f"Retrying {getattr(rs.fn, '__name__', 'function')} due to {rs.outcome.exception()} (attempt {rs.attempt_number})"),
+        reraise=True
+    )
+
+# --- GCP Clients ---
+# *** FIX: Use imported DataCatalogClient ***
+datacatalog_client: Optional[DataCatalogClient] = None
+bq_client: Optional[bigquery.Client] = None
+
+def initialize_clients(max_retries=3):
+    """Initialize GCP clients (Data Catalog, BigQuery) with retry logic."""
+    global datacatalog_client, bq_client
+    if datacatalog_client and bq_client: return
+
+    logger.info("Attempting to initialize GCP clients (Data Catalog, BigQuery)...")
+    retry_count = 0
+    last_exception = None
+    while retry_count < max_retries:
+        try:
+            if not datacatalog_client:
+                # *** FIX: Instantiate imported client ***
+                datacatalog_client = DataCatalogClient()
+                # Test connection (optional)
+                logger.debug(f"Testing Data Catalog connection by listing entry groups in parent: projects/{PROJECT_ID}/locations/{LOCATION}")
+                # Iterate slightly to trigger API call, handle potential NotFound if no groups exist yet
+                try:
+                    _ = list(datacatalog_client.list_entry_groups(parent=f"projects/{PROJECT_ID}/locations/{LOCATION}"))
+                except exceptions.NotFound:
+                     logger.debug("No entry groups found during client initialization test (this is okay).")
+                logger.info("Data Catalog client initialized.")
+            if not bq_client:
+                bq_client = bigquery.Client(project=PROJECT_ID)
+                # Test connection
+                logger.debug("Testing BigQuery connection by listing datasets.")
+                _ = list(bq_client.list_datasets(max_results=1))
+                logger.info("BigQuery client initialized.")
+
+            if datacatalog_client and bq_client:
+                logger.info("Successfully initialized required GCP clients.")
+                return
+
+        except Exception as e:
+            last_exception = e
+            retry_count += 1
+            wait_time = 2 ** retry_count + random.uniform(0, 1) # Add jitter
+            logger.warning(f"Error initializing clients: {e}. Retrying in {wait_time:.2f} seconds. Attempt {retry_count}/{max_retries}", exc_info=False) # Keep exc_info=False for cleaner logs during retries
+            # Reset potentially partially initialized clients
+            datacatalog_client = None
+            bq_client = None
+            if retry_count >= max_retries:
+                logger.error(f"Failed to initialize GCP clients after {max_retries} attempts. Last error: {last_exception}", exc_info=True) # Log full traceback on final failure
+                raise RuntimeError(f"Client initialization failed after {max_retries} attempts") from last_exception
+            time.sleep(wait_time)
+
+# --- Service Functions ---
+
+def validate_configuration():
+    """Validates the configuration values needed for this cell."""
+    missing = [var for var in ['PROJECT_ID', 'LOCATION', 'DATASET_ID', 'ENTRY_GROUP_ID', 'DATA_DICTIONARY_TABLE_NAME'] if not globals().get(var)]
+    if missing: raise ValueError(f"Missing required configuration: {', '.join(missing)}")
+    logger.info(f"Configuration validated. Project: {PROJECT_ID}, Location: {LOCATION}, Dataset: {DATASET_ID}, Entry Group: {ENTRY_GROUP_ID}")
+
+
+def sanitize_entry_id(name: str, max_length: int = 64) -> str:
+    """Sanitizes a string to be a valid Data Catalog Entry ID."""
+    if not name: return f"invalid_name_{hashlib.md5(str(random.random()).encode()).hexdigest()[:8]}"
+    # Replace invalid characters (anything not letter, number, or underscore) with underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+    # Remove leading/trailing underscores that might result
+    sanitized = sanitized.strip('_')
+
+    # Ensure it doesn't start with a digit (sometimes causes issues, prepend underscore if needed)
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+
+    # Handle length constraint
+    if len(sanitized) > max_length:
+        # Keep part of the original name and add a hash for uniqueness
+        name_hash = hashlib.md5(name.encode()).hexdigest()[:8] # Shorter hash
+        prefix_len = max_length - len(name_hash) - 1 # Account for the underscore separator
+        prefix = sanitized[:prefix_len].strip('_') # Ensure prefix doesn't end with _ if truncated
+        sanitized = f"{prefix}_{name_hash}"
+
+    # Handle cases where sanitization results in empty string (e.g., input was just '---')
+    if not sanitized:
+        return f"sanitized_empty_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+
+    # Final check for length, unlikely needed after hashing logic but safe
+    return sanitized[:max_length]
+
+@retry_with_backoff_tenacity()
+def create_or_get_entry_group() -> Optional[str]:
+    """Creates or gets the Data Catalog Entry Group. Returns the resource name."""
+    if datacatalog_client is None: raise RuntimeError("Data Catalog client not initialized.")
+
+    entry_group_path = datacatalog_client.entry_group_path(PROJECT_ID, LOCATION, ENTRY_GROUP_ID)
+    parent_path = f"projects/{PROJECT_ID}/locations/{LOCATION}" # Use f-string for parent path
+
+    try:
+        logger.debug(f"Checking for existing entry group: {entry_group_path}")
+        entry_group = datacatalog_client.get_entry_group(name=entry_group_path)
+        logger.info(f"Using existing Data Catalog Entry Group: {entry_group.name}")
+        return entry_group.name
+    except exceptions.NotFound:
+        logger.info(f"Entry group '{ENTRY_GROUP_ID}' not found in {LOCATION}. Creating...")
+        try:
+            # *** FIX: Use imported types ***
+            entry_group_obj = types.EntryGroup()
+            # Keep display name simple or make it more descriptive
+            entry_group_obj.display_name = f"{DATASET_ID} Data Dictionary"
+            entry_group_obj.description = f"Custom Data Catalog entries based on the '{DATA_DICTIONARY_TABLE_NAME}' table for BigQuery dataset '{DATASET_ID}'."
+
+            created_entry_group = datacatalog_client.create_entry_group(
+                parent=parent_path,
+                entry_group_id=ENTRY_GROUP_ID,
+                entry_group=entry_group_obj
+            )
+            logger.info(f"Created Data Catalog Entry Group: {created_entry_group.name}")
+            return created_entry_group.name
+        except exceptions.PermissionDenied as e: logger.error(f"Permission denied creating entry group '{ENTRY_GROUP_ID}'. Check IAM roles ('Data Catalog Admin' or equivalent on project/location). Error: {e}", exc_info=True); raise
+        except exceptions.AlreadyExists: # Handle race condition
+            logger.warning(f"Entry group '{ENTRY_GROUP_ID}' created concurrently. Fetching it.")
+            # Add a small delay before fetching in case of creation lag
+            time.sleep(random.uniform(0.5, 1.5))
+            entry_group = datacatalog_client.get_entry_group(name=entry_group_path)
+            logger.info(f"Fetched concurrently created entry group: {entry_group.name}")
+            return entry_group.name
+        except Exception as e: logger.error(f"Error creating entry group '{ENTRY_GROUP_ID}': {e}", exc_info=True); raise
+    except exceptions.PermissionDenied as e: logger.error(f"Permission denied accessing entry group '{ENTRY_GROUP_ID}'. Check IAM roles. Error: {e}", exc_info=True); raise
+    except Exception as e: logger.error(f"Error accessing entry group '{ENTRY_GROUP_ID}': {e}", exc_info=True); raise
+
+
+def validate_entry_data(table_name: str, columns: List[Dict[str, Any]]) -> bool:
+    """Validates the data before attempting to create/update a Data Catalog entry."""
+    if not table_name: logger.warning("Skipping entry creation: Table name missing."); return False
+    if not columns: logger.warning(f"Skipping entry creation for '{table_name}': No column data provided."); return False
+    valid = True
+    for i, col in enumerate(columns):
+        col_name = col.get("column_name")
+        data_type = col.get("data_type")
+        if not col_name or not isinstance(col_name, str):
+            logger.warning(f"Invalid column data for '{table_name}' at index {i}: 'column_name' missing or not a string. Data: {col}")
+            valid = False
+        if not data_type or not isinstance(data_type, str):
+            logger.warning(f"Invalid column data for '{table_name}' at index {i}: 'data_type' missing or not a string. Data: {col}")
+            valid = False
+    if not valid:
+         logger.warning(f"Skipping entry creation for '{table_name}' due to invalid column data.")
+    return valid
+
+@retry_with_backoff_tenacity()
+def create_or_update_catalog_entry(entry_group_name: str, table_name: str, columns: List[Dict[str, Any]]) -> Tuple[str, bool, Optional[str]]:
+    """Creates or updates a Data Catalog entry for a single table."""
+    if datacatalog_client is None: return table_name, False, "Data Catalog client not initialized"
+    if not entry_group_name: return table_name, False, "Entry group name not provided"
+    # Perform validation *before* sanitizing, using original table name for logs
+    if not validate_entry_data(table_name, columns): return table_name, True, "Skipped (Invalid Input Data)"
+
+    entry_id = sanitize_entry_id(table_name)
+    entry_path = datacatalog_client.entry_path(PROJECT_ID, LOCATION, ENTRY_GROUP_ID, entry_id)
+    # Construct the linked resource carefully, ensuring table_name matches BQ reality
+    # Assume table_name from dictionary IS the actual BQ table name
+    linked_resource = f"//bigquery.googleapis.com/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{table_name}"
+
+    # Create the Data Catalog schema from column data
+    catalog_columns = []
+    for col in columns:
+        # *** FIX: Use imported types ***
+        catalog_columns.append(types.ColumnSchema(
+            column=col["column_name"],
+            type_=col["data_type"], # Use type_ argument
+            description=col.get("description", "") or "", # Ensure description is never None
+            mode=col.get("mode", "NULLABLE") or "NULLABLE" # Ensure mode is never None, DEFAULT IS HERE
+        ))
+
+    # Prepare the entry object
+    # *** FIX: Use imported types ***
+    entry = types.Entry()
+    # Don't set entry.name for create, only for update/get
+    entry.display_name = table_name # Use original table name for display
+    entry.description = f"Schema definition for BigQuery table: {table_name} (Source: {DATA_DICTIONARY_TABLE_NAME})"
+    entry.linked_resource = linked_resource
+    entry.schema_ = types.Schema(columns=catalog_columns) # Use schema_ attribute
+    entry.type_ = types.EntryType.TABLE # Use enum from types
+    # Specify BigQuery table details
+    entry.bigquery_table_spec = types.BigQueryTableSpec(
+        table_source_type=types.TableSourceType.BIGQUERY_TABLE # Use enum from types
+    )
+
+    try:
+        logger.debug(f"Attempting to get existing DC entry: {entry_path}")
+        existing_entry = datacatalog_client.get_entry(name=entry_path)
+        logger.info(f"DC entry for {table_name} (ID: {entry_id}) exists. Updating.")
+        # *** IMPORTANT FOR UPDATE: Set the full entry name ***
+        entry.name = entry_path
+        # Define fields to update explicitly
+        update_mask = {"paths": ["schema", "description", "display_name", "linked_resource", "bigquery_table_spec"]}
+        updated_entry = datacatalog_client.update_entry(entry=entry, update_mask=update_mask)
+        logger.info(f"Successfully updated DC entry for table {table_name} (ID: {entry_id})")
+        return table_name, True, "Updated" # Success - Updated
+
+    except exceptions.NotFound:
+        logger.info(f"Creating new DC entry for table {table_name} (ID: {entry_id})")
+        try:
+            created_entry = datacatalog_client.create_entry(
+                parent=entry_group_name, entry_id=entry_id, entry=entry
+            )
+            logger.info(f"Successfully created DC entry: {created_entry.name}")
+            return table_name, True, "Created" # Success - Created
+        except exceptions.AlreadyExists:
+            # This can happen in rare race conditions even after the initial check
+            logger.warning(f"DC entry for {table_name} (ID: {entry_id}) created concurrently after initial check failed. Attempting update instead.")
+            # Fallback to update logic might be needed, or just log and skip
+            # For simplicity, just log the skip here
+            return table_name, True, "Skipped (Concurrent Creation)"
+        except Exception as create_err:
+            error_message = f"Error creating DC entry for {table_name} (ID: {entry_id}): {create_err}"
+            logger.error(error_message, exc_info=True)
+            return table_name, False, error_message
+
+    except Exception as e:
+        error_message = f"Error processing DC entry for {table_name} (ID: {entry_id}): {e}"
+        logger.error(error_message, exc_info=True)
+        return table_name, False, error_message
+
+
+@retry_with_backoff_tenacity(retries=5, backoff_in_seconds=2, max_wait=30) # More robust retries for BQ query
+def read_data_dictionary() -> Dict[str, List[Dict[str, Any]]]:
+    """Reads the data dictionary table from BigQuery and groups by table name."""
+    if bq_client is None: raise RuntimeError("BigQuery client not initialized.")
+
+    # Query to get the latest schema info for each table based on last_captured_at
+    # Assumes columns: table_name, column_name, data_type, description, last_captured_at
+    # *** FIX: Removed references to 'mode' column ***
+    query = f"""
+        WITH RankedSchemas AS (
+            SELECT
+                table_name,
+                column_name,
+                data_type,
+                -- Removed: IFNULL(mode, 'NULLABLE') as mode,
+                IFNULL(description, '') as description, -- Default description if NULL
+                last_captured_at,
+                ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY last_captured_at DESC) as rn
+            FROM `{FULL_DATA_DICTIONARY_TABLE_ID}`
+            WHERE table_name IS NOT NULL AND column_name IS NOT NULL AND data_type IS NOT NULL
+        )
+        SELECT
+            table_name, column_name, data_type, description, last_captured_at -- Removed 'mode' from final SELECT
+        FROM RankedSchemas
+        WHERE rn = 1
+        ORDER BY table_name, column_name
+    """
+    logger.info(f"Reading latest data dictionary entries from: {FULL_DATA_DICTIONARY_TABLE_ID}")
+    tables_data = defaultdict(list)
+    processed_rows = 0
+    try:
+        query_job = bq_client.query(query)
+        # Use iterator for potentially large results, add progress logging maybe later
+        results = query_job.result(timeout=300) # 5 min timeout for BQ query
+        for row in results:
+            # Basic validation on row data retrieved
+            if not row.table_name or not row.column_name or not row.data_type:
+                 logger.warning(f"Skipping row with missing critical data: {row}")
+                 continue
+            processed_rows += 1
+            tables_data[row.table_name].append({
+                "column_name": row.column_name,
+                "data_type": row.data_type,
+                # "mode" is no longer read from BQ, will use default in create_or_update_catalog_entry
+                "description": row.description, # Already defaulted in SQL
+                # Pass hash/timestamp if needed by create_or_update_catalog_entry later
+                # "last_captured_at": row.last_captured_at,
+            })
+        if processed_rows == 0:
+            logger.warning(f"No valid rows found in data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} or the table is empty/doesn't exist.")
+        else:
+            logger.info(f"Read schema info for {len(tables_data)} tables ({processed_rows} total column entries) from data dictionary.")
+        return dict(tables_data) # Convert back to regular dict
+    except exceptions.NotFound:
+        logger.error(f"Data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID} not found.")
+        return {}
+    except exceptions.BadRequest as bq_err: # Catch BadRequest specifically for query errors
+        logger.error(f"Invalid BigQuery query for table {FULL_DATA_DICTIONARY_TABLE_ID}. Check schema and query syntax. Error: {bq_err}", exc_info=True)
+        # It's unlikely retrying a bad query will help, so re-raise immediately
+        raise RuntimeError(f"BigQuery query failed: {bq_err}") from bq_err
+    except Exception as e:
+        logger.error(f"Error reading data dictionary table {FULL_DATA_DICTIONARY_TABLE_ID}: {e}", exc_info=True)
+        raise # Reraise other exceptions after logging
+
+def process_catalog_entries_in_parallel(entry_group_name: str, tables_data: Dict[str, List[Dict[str, Any]]], max_workers=5):
+    """Processes Data Catalog entries in parallel using ThreadPoolExecutor."""
+    if not entry_group_name:
+        logger.error("Cannot process catalog entries: entry group name missing.")
+        return {'success': 0, 'skipped': 0, 'failed': 0} # Return status dict
+    if not tables_data:
+        logger.info("No table data from dictionary to process for Data Catalog.")
+        return {'success': 0, 'skipped': 0, 'failed': 0}
+
+    total_tables = len(tables_data)
+    results = {'success': 0, 'skipped': 0, 'failed': 0}
+    start_time = time.time()
+    logger.info(f"Starting parallel Data Catalog entry processing for {total_tables} tables (Workers: {max_workers})...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create futures mapped back to the table name for easier error reporting
+        futures = {
+            executor.submit(create_or_update_catalog_entry, entry_group_name, table_name, columns): table_name
+            for table_name, columns in tables_data.items()
+        }
+
+        # Use tqdm for progress bar
+        for future in tqdm(as_completed(futures), total=total_tables, desc="Processing Catalog Entries", unit="table"):
+            table_name = futures[future] # Get table name associated with this future
+            try:
+                origin_table_name, success, message = future.result() # origin_table_name should match table_name
+                if success:
+                    if message and "Skipped" in message:
+                        results['skipped'] += 1
+                        logger.debug(f"Skipped {origin_table_name}: {message}") # Use debug for skipped logs
+                    else:
+                        results['success'] += 1
+                        # Log success lightly, maybe only every N successes or based on verbosity level
+                        # logger.debug(f"Successfully processed {origin_table_name}: {message}")
+                else:
+                    results['failed'] += 1
+                    # Error already logged within create_or_update_catalog_entry
+                    # logger.error(f"FAILED: {origin_table_name} - {message}") # Redundant log entry
+            except Exception as e:
+                # Catch exceptions raised by the future itself (e.g., network errors during execution)
+                results['failed'] += 1
+                logger.error(f"FAILED (Future Error): Processing for table '{table_name}' resulted in exception: {e}", exc_info=True)
+
+    end_time = time.time()
+    logger.info(f"Finished Data Catalog processing in {end_time - start_time:.2f} seconds.")
+    logger.info(f"Summary: Processed: {total_tables}, Succeeded (Created/Updated): {results['success']}, Skipped: {results['skipped']}, Failed: {results['failed']}")
+    return results
+
+
+def main(dry_run=False):
+    """Main function to run the Data Catalog integration."""
+    global datacatalog_client, bq_client # Ensure clients are accessible
+    start_time = time.time()
+    logger.info(f"Starting Data Catalog Integration (Cell 4.2 - Run at {time.strftime('%Y-%m-%d %H:%M:%S %Z')})...")
+    final_status = "UNKNOWN"
+    try:
+        validate_configuration()
+        initialize_clients() # Initialize clients first
+        entry_group_name = create_or_get_entry_group()
+
+        if not entry_group_name:
+            # Error already logged in create_or_get_entry_group if it failed
+            raise RuntimeError("Failed to create or get Data Catalog Entry Group.")
+
+        tables_data = read_data_dictionary()
+        if not tables_data:
+            logger.warning("No data read from the data dictionary. No entries to process.")
+            final_status = "COMPLETED (No Data)"
+            return # Exit cleanly if no data
+
+        if dry_run:
+            logger.warning("--- DRY RUN MODE ENABLED ---")
+            logger.info(f"Would attempt to process {len(tables_data)} tables into Entry Group: {entry_group_name}")
+            logger.info("Example table data (first 5 columns of first table):")
+            if tables_data: # Check if tables_data is not empty
+                first_table = next(iter(tables_data))
+                logger.info(f"Table: {first_table}")
+                for col in tables_data[first_table][:5]: logger.info(f"  - {col}")
+            else:
+                logger.info("No tables found in data dictionary to display example.")
+            logger.warning("--- END DRY RUN ---")
+            final_status = "COMPLETED (Dry Run)"
+        else:
+            logger.info(f"Processing {len(tables_data)} tables into Entry Group: {entry_group_name}")
+            results = process_catalog_entries_in_parallel(entry_group_name, tables_data, max_workers=8) # Increased workers slightly
+            if results['failed'] > 0:
+                 final_status = "COMPLETED WITH ERRORS"
+            elif results['success'] > 0 or results['skipped'] > 0:
+                 final_status = "COMPLETED SUCCESSFULLY"
+            else:
+                 final_status = "COMPLETED (No Entries Processed)" # e.g., all skipped
+
+
+    except Exception as e:
+        final_status = "FAILED"
+        # Catch any unexpected errors during the main flow
+        logger.critical(f"A critical error occurred in the main Data Catalog integration process: {e}", exc_info=True)
+        # Optionally re-raise or handle cleanup
+        # raise e
+    finally:
+        end_time = time.time()
+        logger.info(f"Data Catalog Integration finished. Status: {final_status}. Total time: {end_time - start_time:.2f} seconds.")
+
+
+if __name__ == "__main__":
+    # Example of running directly:
+    # Set environment variables if needed before running, e.g.,
+    # os.environ['PROJECT_ID'] = 'your-gcp-project'
+    # os.environ['LOCATION'] = 'us-central1'
+    # os.environ['DATASET_ID'] = 'your_dataset'
+    # os.environ['ENTRY_GROUP_ID'] = 'your_entry_group'
+    # os.environ['DATA_DICTIONARY_TABLE'] = 'your_dict_table'
+
+    # Run the main function, set dry_run=True for testing without modifying Data Catalog
+    main(dry_run=False)

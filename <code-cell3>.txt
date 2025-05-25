@@ -1,0 +1,738 @@
+# Cell 3: Data Cleaning and Transformation (Fixed)
+# NOTE: Remediation Report suggests modularizing cleaners, improving error handling, adding tests.
+
+import pandas as pd
+from google.cloud import bigquery
+import logging
+from google.api_core.exceptions import NotFound, GoogleAPIError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import os
+import random
+from typing import Dict, Any, Optional, Callable, List, Tuple # Added List, Tuple
+
+# Initialize logging (Consider centralizing this as per Remediation Report)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# GCP Project and Data Information (Consider replacing with Pydantic Settings)
+# These should ideally be sourced from a central config (e.g., Cell 1 or Pydantic)
+project_id = os.environ.get('PROJECT_ID', "spry-bus-425315-p6") # Use the same default as Cell 1
+# bucket_name = os.environ.get('BUCKET_NAME', "mycocoons") # Not directly used in this cell
+dataset_id = os.environ.get('DATASET_ID', "mycocoons") # Use the same default as Cell 1
+
+# Initialize BigQuery client with retry (Consider using shared factory from Cell 1)
+def initialize_client(max_retries=3):
+    """Initialize BigQuery client with retry logic.
+       NOTE: Remediation report suggests using shared client factories from Cell 1.
+    """
+    retry_count = 0
+    client = None # Initialize client as None
+    while retry_count < max_retries:
+        try:
+            client = bigquery.Client(project=project_id)
+            # Test connection (optional but recommended)
+            client.list_datasets(max_results=1)
+            logger.info("Successfully initialized BigQuery client")
+            return client
+        except Exception as e:
+            retry_count += 1
+            wait_time = 2 ** retry_count
+            logger.warning(f"Error initializing BigQuery client: {e}. Retrying in {wait_time} seconds. Attempt {retry_count}/{max_retries}")
+            time.sleep(wait_time)
+
+    logger.error("Failed to initialize BigQuery client after multiple attempts.")
+    raise RuntimeError("Failed to initialize BigQuery client after multiple attempts")
+
+# Retry decorator (Consider extracting to shared utils as per Remediation Report)
+def retry_with_backoff(max_retries=3, backoff_in_seconds=1):
+    """Decorator for retrying functions with exponential backoff."""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                # Catch specific retryable errors + potentially others if needed
+                except (GoogleAPIError, ConnectionError, TimeoutError) as e:
+                    retries += 1
+                    if retries == max_retries:
+                        logger.error(f"Function {func.__name__} failed after {max_retries} retries: {e}", exc_info=True)
+                        raise # Reraise the last exception
+                    sleep_time = backoff_in_seconds * (2 ** retries) + random.uniform(0, 1)
+                    logger.warning(f"Retrying {func.__name__} in {sleep_time:.2f} seconds due to error: {e}")
+                    time.sleep(sleep_time)
+                # Catch non-retryable errors or final failure
+                except Exception as e:
+                     logger.error(f"Function {func.__name__} encountered non-retryable error: {e}", exc_info=True)
+                     raise # Reraise immediately
+        return wrapper
+    return decorator
+
+# --- Cleaning Functions ---
+# Remediation: Move each cleaner to a separate file (e.g., /cleaners/facebook.py)
+# Remediation: Add validation schemas (e.g., Marshmallow, Pydantic)
+
+def clean_facebook_ads_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Cleans and transforms a DataFrame of Facebook Ads data."""
+    logger.debug(f"Starting cleaning for Facebook Ads data. Initial shape: {df.shape}")
+    if df.empty:
+        logger.warning("Input DataFrame for Facebook Ads is empty.")
+        return df
+    try:
+        # Standardize column names (example: lowercasing)
+        df.columns = df.columns.str.lower().str.replace(' ', '_')
+
+        # Ensure columns exist before operating on them, provide default values
+        if 'ad_id' in df.columns:
+            df['ad_id'] = df['ad_id'].astype(str).fillna('unknown')
+        else: df['ad_id'] = 'unknown'
+
+        if 'campaign_id' in df.columns:
+            df['campaign_id'] = df['campaign_id'].astype(str).fillna('unknown')
+        else: df['campaign_id'] = 'unknown'
+
+        # Safely handle geo column
+        if 'geo' in df.columns:
+            df['geo'] = df['geo'].astype(str).fillna('')
+        else:
+            df['geo'] = '' # Add column if missing
+
+        # Create composite key only if both columns exist (after potential creation)
+        df['ad_campaign_id'] = df['ad_id'] + '_' + df['campaign_id']
+
+        # Perform data quality checks and cleaning for specific columns
+        numeric_cols = ['impressions', 'clicks', 'spend', 'reach', 'frequency']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float) # Use float for spend
+            else:
+                df[col] = 0.0 # Add missing numeric columns with 0
+
+        # Handle date columns
+        date_cols = ['date_start', 'date_stop', 'reporting_starts', 'reporting_ends']
+        for col in date_cols:
+             if col in df.columns:
+                  df[col] = pd.to_datetime(df[col], errors='coerce') # NaT if conversion fails
+
+        logger.info(f"Facebook Ads data cleaned successfully. Final shape: {df.shape}")
+        return df
+    except KeyError as e:
+        # Remediation: Raise specific typed error
+        logger.error(f"Missing expected column during Facebook Ads cleaning: {e}", exc_info=True)
+        # Return empty frame or frame up to point of failure? Returning empty for safety.
+        return pd.DataFrame()
+    except Exception as e:
+        # Remediation: Raise specific typed error, avoid silent except blocks
+        logger.error(f"Unexpected error cleaning Facebook Ads data: {e}", exc_info=True)
+        raise # Reraise the exception
+
+def clean_google_analytics_data(df: pd.DataFrame, table_type: str) -> pd.DataFrame:
+    """Cleans and transforms a DataFrame of Google Analytics data."""
+    logger.debug(f"Starting cleaning for Google Analytics data ({table_type}). Initial shape: {df.shape}")
+    if df.empty:
+        logger.warning(f"Input DataFrame for Google Analytics ({table_type}) is empty.")
+        return df
+    try:
+        # Standardize column names
+        df.columns = df.columns.str.lower().str.replace(':', '_').replace('.', '_')
+
+        # Define expected ID columns per category (example, needs refinement based on actual GA exports)
+        columns_to_clean = {
+            'DEVICE': ['device_category', 'mobile_device_info', 'ga_clientid'],
+            'ECOM_ITEMS': ['item_revenue', 'item_quantity', 'product_sku', 'transaction_id'],
+            'ENGAGEMENT': ['session_id', 'user_id', 'ga_sessionid', 'ga_userid'],
+            'USER': ['user_id', 'ga_userid', 'ga_clientid'],
+            'TRAFFIC': ['session_id', 'ga_sessionid', 'source', 'medium', 'campaign'],
+            'PUBLISHING': ['page_path', 'hostname', 'page_title']
+        }
+
+        # Process relevant columns, converting IDs to string and filling NaNs
+        relevant_cols = []
+        for category, cols in columns_to_clean.items():
+            # Check if table_type contains the category name (case-insensitive)
+            if category.lower() in table_type.lower():
+                relevant_cols.extend(cols)
+
+        for col in relevant_cols:
+            if col in df.columns:
+                # Convert potential numeric IDs to string safely
+                if pd.api.types.is_numeric_dtype(df[col]):
+                     df[col] = df[col].astype(str).replace('nan', '').fillna('')
+                else:
+                     df[col] = df[col].astype(str).fillna('')
+            # else: logger.debug(f"Column '{col}' not found in GA table {table_type}")
+
+        # Create unified ID only if relevant ID columns exist
+        # Prioritize user_id, then clientid, then session_id
+        id_priority = ['user_id', 'ga_userid', 'ga_clientid', 'session_id', 'ga_sessionid', 'transaction_id']
+        id_columns_present = [col for col in id_priority if col in df.columns]
+
+        if id_columns_present:
+            # Use the highest priority ID found as the primary 'unified_id'
+            primary_id_col = id_columns_present[0]
+            df['unified_id'] = df[primary_id_col]
+            logger.debug(f"Using '{primary_id_col}' as unified_id for GA table {table_type}")
+            # Optionally create a composite key if multiple IDs are important
+            # df['composite_id'] = df[id_columns_present].astype(str).agg('_'.join, axis=1)
+        else:
+            logger.warning(f"No standard ID columns found for GA table {table_type}. Cannot create unified_id.")
+            df['unified_id'] = '' # Add empty column
+
+        # Data quality checks for numeric columns (common examples)
+        numeric_columns = ['pageviews', 'sessions', 'users', 'bounces', 'time_on_page', 'item_revenue', 'item_quantity', 'avg_session_duration']
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+            # else: df[col] = 0.0 # Optionally add missing numeric cols
+
+        # Handle date columns (common examples)
+        date_columns = ['date', 'session_date', 'ga_sessiondate', 'hit_timestamp']
+        for col in date_columns:
+            if col in df.columns:
+                # Try to convert to datetime, coercing errors to NaT
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                # Optionally fill NaT with a default or leave as NaT
+                # df[col] = df[col].fillna(pd.Timestamp('1970-01-01'))
+
+        logger.info(f"Google Analytics data cleaned for table type: {table_type}. Final shape: {df.shape}")
+        return df
+    except KeyError as e:
+        logger.error(f"Missing expected column during Google Analytics cleaning: {e}", exc_info=True)
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Unexpected error cleaning Google Analytics data ({table_type}): {e}", exc_info=True)
+        raise
+
+def clean_shopify_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Cleans and transforms a DataFrame of Shopify data."""
+    logger.debug(f"Starting cleaning for Shopify data. Initial shape: {df.shape}")
+    if df.empty:
+        logger.warning("Input DataFrame for Shopify is empty.")
+        return df
+    try:
+        # Standardize column names
+        df.columns = df.columns.str.lower().str.replace(' ', '_')
+
+        # Convert ID columns to string, if they exist
+        id_cols = ['id', 'order_id', 'customer_id', 'checkout_id', 'cart_token']
+        for col in id_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).fillna('unknown')
+            # else: df[col] = 'unknown' # Optionally add missing ID cols
+
+        # Create composite key only if both required columns exist
+        if 'order_id' in df.columns and 'customer_id' in df.columns:
+            df['order_customer_id'] = df['order_id'] + '_' + df['customer_id']
+
+        # Handle monetary values
+        money_columns = ['total_price', 'subtotal_price', 'total_discounts', 'total_tax', 'current_total_price']
+        for col in money_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+            # else: df[col] = 0.0
+
+        # Handle date columns
+        date_columns = ['created_at', 'processed_at', 'updated_at', 'closed_at', 'cancelled_at']
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+
+        # Handle categorical data
+        categorical_cols = ['financial_status', 'fulfillment_status', 'order_status', 'cancel_reason']
+        for col in categorical_cols:
+             if col in df.columns:
+                  df[col] = df[col].astype(str).fillna('unknown')
+             # else: df[col] = 'unknown'
+
+        # Fix boolean columns (handle strings 'true'/'false' and actual booleans)
+        bool_columns = ['taxes_included', 'test', 'confirmed', 'buyer_accepts_marketing']
+        for col in bool_columns:
+            if col in df.columns:
+                # Map string representations and handle existing booleans/NaNs
+                bool_map = {'true': True, 'false': False, 'True': True, 'False': False, True: True, False: False}
+                # Apply map, fillna(False) assumes missing means False
+                df[col] = df[col].astype(str).map(bool_map).fillna(False)
+            # else: df[col] = False # Optionally add missing bool cols as False
+
+        # Handle nested JSON (example: customer -> default_address) - requires careful parsing
+        # if 'customer' in df.columns:
+        #     try:
+        #         customer_data = pd.json_normalize(df['customer'].apply(lambda x: json.loads(x) if isinstance(x, str) else x))
+        #         # Rename columns to avoid clashes, e.g., customer_data.add_prefix('customer_')
+        #         # df = pd.concat([df.drop('customer', axis=1), customer_data], axis=1)
+        #     except Exception as json_err:
+        #         logger.warning(f"Could not parse 'customer' column as JSON: {json_err}")
+
+        logger.info(f"Shopify data cleaned successfully. Final shape: {df.shape}")
+        return df
+    except KeyError as e:
+        logger.error(f"Missing expected column during Shopify cleaning: {e}", exc_info=True)
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Unexpected error cleaning Shopify data: {e}", exc_info=True)
+        raise
+
+def clean_ga4custom_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Cleans and transforms a DataFrame of GA4Custom data (example)."""
+    logger.debug(f"Starting cleaning for GA4Custom data. Initial shape: {df.shape}")
+    if df.empty:
+        logger.warning("Input DataFrame for GA4Custom is empty.")
+        return df
+    try:
+        # Standardize column names
+        df.columns = df.columns.str.lower().str.replace('.', '_') # Replace dots often used in GA4 params
+
+        # Type conversion for common columns
+        id_cols = ['event_name', 'user_pseudo_id', 'ga_session_id', 'stream_id', 'firebase_event_id']
+        for col in id_cols:
+             if col in df.columns:
+                  df[col] = df[col].astype(str).fillna('unknown')
+             # else: df[col] = 'unknown'
+
+        # Create unified ID if relevant columns exist
+        id_columns_present = [col for col in ['user_pseudo_id', 'ga_session_id'] if col in df.columns]
+        if id_columns_present:
+            df['unified_id'] = df[id_columns_present].astype(str).agg('_'.join, axis=1)
+        else:
+            df['unified_id'] = ''
+
+        # Handle timestamps (often microseconds in GA4)
+        if 'event_timestamp' in df.columns:
+            # Assuming timestamp is in microseconds since epoch
+            df['event_timestamp_ms'] = pd.to_numeric(df['event_timestamp'], errors='coerce')
+            df['event_datetime'] = pd.to_datetime(df['event_timestamp_ms'] / 1000, unit='ms', errors='coerce')
+            # Create a date column for easier partitioning/querying
+            df['event_date'] = df['event_datetime'].dt.date
+        elif 'event_date' in df.columns: # If date is already present
+             df['event_date'] = pd.to_datetime(df['event_date'], errors='coerce').dt.date
+
+        # Handle event parameters (often nested structures)
+        # Example: Flatten 'event_params' if it's a list of key-value pairs
+        # This requires a more complex function depending on the exact structure
+        # def flatten_params(params):
+        #     if isinstance(params, list):
+        #         flat = {}
+        #         for item in params:
+        #             key = item.get('key')
+        #             value_dict = item.get('value', {})
+        #             # Extract value based on type (string_value, int_value, etc.)
+        #             value = value_dict.get('string_value', value_dict.get('int_value', ...))
+        #             if key: flat[f'param_{key}'] = value
+        #         return flat
+        #     return {}
+        # if 'event_params' in df.columns:
+        #     param_df = pd.DataFrame(df['event_params'].apply(flatten_params).tolist())
+        #     df = pd.concat([df.drop('event_params', axis=1), param_df], axis=1)
+
+
+        # Handle numeric parameters (example)
+        numeric_params = ['engagement_time_msec', 'session_duration', 'value']
+        for param in numeric_params:
+            # Check if param exists directly or as param_<name> after flattening
+            col_name = param if param in df.columns else f'param_{param}'
+            if col_name in df.columns:
+                df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(float)
+            # else: df[col_name] = 0.0
+
+        logger.info(f"GA4Custom data cleaned successfully. Final shape: {df.shape}")
+        return df
+    except KeyError as e:
+        logger.error(f"Missing expected column during GA4Custom cleaning: {e}", exc_info=True)
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Unexpected error cleaning GA4Custom data: {e}", exc_info=True)
+        raise
+
+def clean_google_ads_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Cleans and transforms a DataFrame of Google Ads data."""
+    logger.debug(f"Starting cleaning for Google Ads data. Initial shape: {df.shape}")
+    if df.empty:
+        logger.warning("Input DataFrame for Google Ads is empty.")
+        return df
+    try:
+        # Standardize column names
+        df.columns = df.columns.str.lower().str.replace('.', '_').replace(' ', '_')
+
+        # ID fields
+        id_cols = ['campaign_id', 'ad_group_id', 'ad_id', 'keyword_id', 'customer_id']
+        for col in id_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).fillna('unknown')
+            # else: df[col] = 'unknown'
+
+        # Metrics
+        metric_columns = ['clicks', 'impressions', 'cost', 'conversions', 'view_through_conversions', 'all_conversions']
+        for col in metric_columns:
+            if col in df.columns:
+                # Cost is often in micro-currency (e.g., micros)
+                if 'cost' in col:
+                     # Assuming cost is in micros, convert to standard currency units
+                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) / 1_000_000
+                else:
+                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int) # Clicks, impressions are integers
+            # else: df[col] = 0 # Or 0.0 for cost
+
+        # Calculate derived metrics if possible
+        if 'clicks' in df.columns and 'impressions' in df.columns:
+            # Avoid division by zero, fill resulting NaN/inf with 0
+            df['ctr'] = (df['clicks'] / df['impressions']).replace([float('inf'), -float('inf')], 0).fillna(0)
+
+        if 'cost' in df.columns and 'clicks' in df.columns:
+            df['cpc'] = (df['cost'] / df['clicks']).replace([float('inf'), -float('inf')], 0).fillna(0)
+
+        if 'cost' in df.columns and 'conversions' in df.columns:
+            df['cost_per_conversion'] = (df['cost'] / df['conversions']).replace([float('inf'), -float('inf')], 0).fillna(0)
+
+        # Handle date columns
+        date_columns = ['date', 'day', 'week', 'month', 'year'] # Adjust based on report granularity
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+
+        logger.info(f"Google Ads data cleaned successfully. Final shape: {df.shape}")
+        return df
+    except KeyError as e:
+        logger.error(f"Missing expected column during Google Ads cleaning: {e}", exc_info=True)
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Unexpected error cleaning Google Ads data: {e}", exc_info=True)
+        raise
+
+def clean_generic_data(df: pd.DataFrame, table_id: str) -> pd.DataFrame:
+    """Applies generic cleaning to DataFrames with undefined types."""
+    logger.warning(f"Applying generic cleaning to table: {table_id}. Initial shape: {df.shape}")
+    if df.empty:
+        return df
+    try:
+        # Standardize column names
+        df.columns = df.columns.str.lower().str.replace('[^0-9a-zA-Z_]+', '_', regex=True).str.strip('_')
+
+        # Replace common null variations (more robustly)
+        null_values = ['null', 'NULL', '', 'NaN', 'nan', 'None', 'undefined', '#N/A']
+        df = df.replace(null_values, pd.NA) # Use pandas NA for consistency
+
+        # Attempt type inference and conversion
+        for col in df.columns:
+            # Skip if already optimal type (like datetime64[ns, UTC])
+            if pd.api.types.is_datetime64_any_dtype(df[col]) or pd.api.types.is_bool_dtype(df[col]):
+                continue
+
+            # Try converting to numeric if not already numeric
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                try:
+                    # Attempt numeric conversion, coercing errors
+                    converted_numeric = pd.to_numeric(df[col], errors='coerce')
+                    # Check if a significant portion converted successfully (e.g., > 50%)
+                    if converted_numeric.notna().sum() / len(df[col]) > 0.5:
+                        # Decide between integer and float
+                        if converted_numeric.dropna().mod(1).eq(0).all(): # Check if all non-NA are integers
+                             df[col] = converted_numeric.astype('Int64') # Use nullable Int64
+                        else:
+                             df[col] = converted_numeric.astype('Float64') # Use nullable Float64
+                        logger.debug(f"Column '{col}' converted to numeric ({df[col].dtype}).")
+                        continue # Move to next column
+                except Exception:
+                    pass # Ignore errors during numeric conversion attempt
+
+            # Try converting to datetime if not already datetime
+            if not pd.api.types.is_datetime64_any_dtype(df[col]):
+                 try:
+                      # Attempt datetime conversion, coercing errors
+                      converted_datetime = pd.to_datetime(df[col], errors='coerce')
+                      # Check if a significant portion converted successfully
+                      if converted_datetime.notna().sum() / len(df[col]) > 0.5:
+                           df[col] = converted_datetime # Keep as datetime64[ns] or specific timezone if inferred
+                           logger.debug(f"Column '{col}' converted to datetime.")
+                           continue # Move to next column
+                 except Exception:
+                      pass # Ignore errors during datetime conversion attempt
+
+            # Default to string if other conversions failed or column is object type
+            if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                 df[col] = df[col].astype(str).fillna('') # Convert remaining NAs to empty string
+                 logger.debug(f"Column '{col}' kept as string.")
+
+        logger.info(f"Generic data cleaning applied successfully to {table_id}. Final shape: {df.shape}")
+        return df
+    except Exception as e:
+        logger.error(f"Error during generic cleaning for table {table_id}: {e}", exc_info=True)
+        raise # Reraise the exception
+
+# --- Schema Validation and Loading ---
+
+@retry_with_backoff(max_retries=3)
+def validate_and_update_schema(df: pd.DataFrame, table_ref: bigquery.TableReference, client: bigquery.Client) -> None:
+    """Validates DataFrame schema against BigQuery table, updates table schema if needed."""
+    logger.debug(f"Validating schema for table {table_ref.table_id}")
+    try:
+        table = client.get_table(table_ref)
+        current_schema_map = {field.name: field for field in table.schema}
+        original_schema = table.schema[:] # Make a copy
+        needs_update = False
+
+        new_schema_fields = []
+        for column_name in df.columns:
+            if column_name not in current_schema_map:
+                # New column detected, determine BQ type
+                needs_update = True
+                field_type = "STRING" # Default
+                if pd.api.types.is_integer_dtype(df[column_name]):
+                    field_type = "INTEGER" # Or BIGNUMERIC if needed
+                elif pd.api.types.is_float_dtype(df[column_name]):
+                    field_type = "FLOAT" # Or NUMERIC/BIGNUMERIC
+                elif pd.api.types.is_datetime64_any_dtype(df[column_name]):
+                    field_type = "TIMESTAMP" # Or DATETIME
+                elif pd.api.types.is_bool_dtype(df[column_name]):
+                    field_type = "BOOLEAN"
+                elif pd.api.types.is_object_dtype(df[column_name]):
+                     # Could be JSON, check content? For now, assume STRING
+                     field_type = "STRING"
+
+                new_field = bigquery.SchemaField(name=column_name, field_type=field_type, mode="NULLABLE")
+                table.schema.append(new_field)
+                logger.info(f"Adding new column '{column_name}' with type {field_type} to schema for {table_ref.table_id}")
+            else:
+                # Column exists, check type compatibility (optional, can be complex)
+                # bq_type = current_schema_map[column_name].field_type
+                # pandas_type = df[column_name].dtype
+                # if not is_compatible(pandas_type, bq_type):
+                #     logger.warning(f"Potential type mismatch for column '{column_name}'...")
+                pass # For now, assume existing types are okay or handle during load
+
+        if needs_update:
+            logger.info(f"Schema update required for table {table_ref.table_id}. Updating...")
+            try:
+                # Only pass the schema field to update_table
+                client.update_table(table, ["schema"])
+                logger.info(f"Schema updated successfully for table {table_ref.table_id}")
+            except Exception as update_err:
+                 logger.error(f"Failed to update schema for {table_ref.table_id}: {update_err}", exc_info=True)
+                 # Rollback schema object in memory? Or just raise?
+                 table.schema = original_schema # Revert schema object in memory
+                 raise # Reraise the update error
+        else:
+            logger.debug(f"Schema for {table_ref.table_id} is up-to-date.")
+
+    except NotFound:
+        # Table doesn't exist, schema will be inferred by load job or created based on DataFrame
+        logger.info(f"Cleaned table {table_ref.table_id} does not exist. Schema will be created during load.")
+        # No update needed, schema will be defined by the load job config
+    except Exception as e:
+        logger.error(f"Error validating/updating schema for table {table_ref.table_id}: {e}", exc_info=True)
+        raise # Reraise the validation error
+
+@retry_with_backoff(max_retries=3)
+def load_dataframe_to_bq(df: pd.DataFrame, table_ref: bigquery.TableReference, client: bigquery.Client) -> None:
+    """Loads a Pandas DataFrame to the specified BigQuery table."""
+    logger.info(f"Loading {len(df)} rows into BigQuery table {table_ref.table_id}...")
+
+    # Configure load job
+    job_config = bigquery.LoadJobConfig(
+        # Schema can be automatically detected from DataFrame dtypes
+        # autodetect=True, # Use if schema isn't managed explicitly
+        # Or define schema explicitly based on DataFrame (safer)
+        schema=client.schema_from_dataframe(df), # Let BQ infer from DF dtypes
+        write_disposition="WRITE_TRUNCATE", # Overwrite the table
+        # Remediation: Use clean.<source>_YYYYMMDD naming and WRITE_APPEND or partitioning?
+        create_disposition="CREATE_IF_NEEDED" # Create table if it doesn't exist
+    )
+
+    try:
+        load_job = client.load_table_from_dataframe(df, table_ref, job_config=job_config)
+        load_job.result(timeout=600) # Wait up to 10 minutes for job completion
+
+        if load_job.errors:
+            logger.error(f"Load job to {table_ref.table_id} failed with errors: {load_job.errors}")
+            # Remediation: Raise specific error?
+            raise GoogleAPIError(f"Load job failed: {load_job.errors}")
+        else:
+            destination_table = client.get_table(table_ref)
+            logger.info(f"Successfully loaded {destination_table.num_rows} rows into {table_ref.table_id}.")
+
+    except Exception as e:
+        logger.error(f"Error loading DataFrame to {table_ref.table_id}: {e}", exc_info=True)
+        raise # Reraise the loading error
+
+
+# --- Main Orchestration Logic ---
+
+# Remediation: CleanerRegistry pattern would replace this dict
+CLEANER_MAPPING: Dict[str, Callable[[pd.DataFrame, Optional[str]], pd.DataFrame]] = {
+    'mycocoons_Facebook_': clean_facebook_ads_data,
+    'mycocoons_GAAnalytics_': clean_google_analytics_data,
+    'mycocoons_Shopify_': clean_shopify_data,
+    'mycocoons_GA4Custom_': clean_ga4custom_data,
+    'mycocoons_Google_': clean_google_ads_data, # Assuming Google_ means Google Ads
+    # Add mappings for other sources if needed
+}
+
+def get_cleaner_function(table_id: str) -> Callable[[pd.DataFrame, Optional[str]], pd.DataFrame]:
+    """Selects the appropriate cleaning function based on table ID prefix."""
+    for prefix, func in CLEANER_MAPPING.items():
+        if table_id.startswith(prefix):
+            # Check if function expects table_type argument
+            import inspect
+            sig = inspect.signature(func)
+            if 'table_type' in sig.parameters:
+                 # Return a lambda that passes the table_id as table_type
+                 return lambda df: func(df, table_id)
+            else:
+                 # Return the function directly
+                 return lambda df: func(df) # Ensure consistent signature
+
+    # Default to generic cleaner if no specific match
+    logger.warning(f"No specific cleaner found for table {table_id}. Using generic cleaner.")
+    return lambda df: clean_generic_data(df, table_id)
+
+
+# @retry_with_backoff(max_retries=1) # Retry the whole table processing once? Maybe not ideal.
+def clean_and_transform_table(table_id: str, client: bigquery.Client) -> Tuple[str, bool, Optional[str]]:
+    """Reads, cleans, validates, and loads data for a single table."""
+    full_table_id = f"{project_id}.{dataset_id}.{table_id}"
+    # Remediation: Use target naming convention clean.<source>_YYYYMMDD
+    cleaned_table_id = f"{table_id}_cleaned"
+    cleaned_table_ref = client.dataset(dataset_id).table(cleaned_table_id)
+    logger.info(f"--- Starting processing for table: {table_id} -> {cleaned_table_id} ---")
+
+    try:
+        # Optional: Check if cleaned table already exists and has data (skip logic)
+        # try:
+        #     table = client.get_table(cleaned_table_ref)
+        #     if table.num_rows is not None and table.num_rows > 0:
+        #         logger.info(f"Cleaned table {cleaned_table_id} already exists with data. Skipping.")
+        #         return table_id, True, "Skipped (Already Exists)"
+        # except NotFound:
+        #     pass # Table doesn't exist, proceed
+
+        # 1. Read data from source BigQuery table
+        logger.debug(f"Reading data from {full_table_id}")
+        query = f"SELECT * FROM `{full_table_id}`" # Consider adding WHERE clauses or LIMIT for testing
+        # Add timeout to query job
+        query_job = client.query(query, job_config=bigquery.QueryJobConfig(use_query_cache=False)) # Disable cache for fresh data
+        df = query_job.to_dataframe(timeout=600) # Wait up to 10 mins
+
+        if df.empty:
+            logger.warning(f"Source table {table_id} is empty. Skipping.")
+            return table_id, True, "Skipped (Source Empty)"
+
+        # 2. Apply cleaning function
+        logger.debug(f"Applying cleaning function for {table_id}")
+        cleaner_func = get_cleaner_function(table_id)
+        cleaned_df = cleaner_func(df) # Pass table_id if needed by cleaner
+
+        if cleaned_df.empty:
+            logger.warning(f"Cleaning resulted in an empty DataFrame for table {table_id}. Skipping load.")
+            return table_id, True, "Skipped (Empty After Clean)"
+
+        # 3. Validate and update schema of the target cleaned table
+        validate_and_update_schema(cleaned_df, cleaned_table_ref, client)
+
+        # 4. Write cleaned data to the target BigQuery table
+        load_dataframe_to_bq(cleaned_df, cleaned_table_ref, client)
+
+        logger.info(f"Successfully processed table {table_id} -> {cleaned_table_id}")
+        return table_id, True, None # Success
+
+    except Exception as e:
+        error_message = f"Error processing table {table_id}: {e}"
+        logger.error(error_message, exc_info=True)
+        # Remediation: Update manifest or log to a dedicated error table
+        return table_id, False, error_message # Failure
+
+
+def process_tables_in_parallel(tables: List[bigquery.TableListItem], client: bigquery.Client, max_workers: int = 4) -> None:
+    """Processes multiple tables in parallel using ThreadPoolExecutor."""
+    total_tables = len(tables)
+    if total_tables == 0:
+        logger.info("No tables found to process.")
+        return
+
+    processed_count = 0
+    success_count = 0
+    skipped_count = 0
+    failed_count = 0
+
+    start_time = time.time()
+    logger.info(f"Starting parallel processing for {total_tables} tables with {max_workers} workers...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create futures
+        futures = {executor.submit(clean_and_transform_table, table.table_id, client): table.table_id for table in tables}
+
+        # Process results as they complete
+        for future in as_completed(futures):
+            table_id = futures[future]
+            processed_count += 1
+            try:
+                origin_table_id, success, message = future.result()
+                if success:
+                    if message and "Skipped" in message:
+                        skipped_count += 1
+                        logger.info(f"[{processed_count}/{total_tables}] Skipped {origin_table_id}: {message}")
+                    else:
+                        success_count += 1
+                        logger.info(f"[{processed_count}/{total_tables}] Success: {origin_table_id}")
+                else:
+                    failed_count += 1
+                    logger.error(f"[{processed_count}/{total_tables}] FAILED: {origin_table_id} - {message}")
+
+            except Exception as e:
+                # Catch unexpected errors from the future itself
+                failed_count += 1
+                logger.error(f"[{processed_count}/{total_tables}] FAILED (Future Error): {table_id} - {e}", exc_info=True)
+
+            # Log progress periodically
+            if processed_count % 50 == 0 or processed_count == total_tables:
+                 elapsed_time = time.time() - start_time
+                 logger.info(f"Progress: {processed_count}/{total_tables} tables processed. "
+                             f"Success: {success_count}, Skipped: {skipped_count}, Failed: {failed_count}. "
+                             f"Elapsed: {elapsed_time:.2f}s")
+
+    end_time = time.time()
+    logger.info(f"Finished processing all tables in {end_time - start_time:.2f} seconds.")
+    logger.info(f"Summary: Success: {success_count}, Skipped: {skipped_count}, Failed: {failed_count}")
+
+
+def main():
+    """Main function to orchestrate the cleaning and transformation process."""
+    logger.info("Starting Data Cleaning and Transformation (Cell 3)...")
+    client = None # Ensure client is initialized in try block
+    try:
+        # Initialize client
+        client = initialize_client()
+
+        # Get a list of tables in the dataset (excluding already cleaned tables)
+        logger.info(f"Listing tables in dataset {project_id}.{dataset_id}...")
+        try:
+            all_tables_iterator = client.list_tables(dataset_id)
+            # Filter out tables ending with '_cleaned' and potentially views/external tables
+            tables_to_process = [
+                table for table in all_tables_iterator
+                if not table.table_id.endswith('_cleaned') and table.table_type == 'TABLE'
+            ]
+
+            if not tables_to_process:
+                logger.warning(f"No source tables found in dataset {dataset_id} to process (excluding *_cleaned).")
+                return
+
+            logger.info(f"Found {len(tables_to_process)} source tables to process.")
+
+            # Process tables in parallel
+            # Adjust max_workers based on resources and API quotas
+            process_tables_in_parallel(tables_to_process, client, max_workers=5)
+
+        except NotFound:
+            logger.error(f"Dataset {dataset_id} not found in project {project_id}. Please ensure it exists.")
+        except Exception as list_err:
+             logger.error(f"Error listing tables in dataset {dataset_id}: {list_err}", exc_info=True)
+
+    except Exception as e:
+        logger.critical(f"An critical error occurred in the main cleaning process: {e}", exc_info=True)
+    finally:
+        # Clean up resources if necessary (client might be managed elsewhere in a real app)
+        logger.info("Data Cleaning and Transformation (Cell 3) finished.")
+
+
+if __name__ == "__main__":
+    main()

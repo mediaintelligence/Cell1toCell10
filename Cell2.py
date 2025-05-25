@@ -1,0 +1,357 @@
+#pic exists for triggering Cell 3.
+#       Includes shared naming functions (should be moved to utils) & validation.
+
+import logging
+import os
+import json
+import base64
+import time
+import re
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+
+from google.cloud import bigquery, storage, pubsub_v1
+from google.api_core.exceptions import NotFound, Conflict, ServiceUnavailable, GoogleAPIError, BadRequest
+from google.cloud import exceptions as google_exceptions
+# Import Retry and the predicate helper function for google-cloud-core retry
+from google.api_core.retry import Retry, if_exception_type
+# Import tenacity components needed for the factory function
+from tenacity import retry as tenacity_retry, stop_after_attempt, wait_exponential, retry_if_exception_type as tenacity_if_exception_type
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s'
+)
+logger = logging.getLogger(__name__)
+# (Reduce verbosity logs - same as before)
+logging.getLogger('google.api_core').setLevel(logging.WARNING)
+logging.getLogger('google.auth').setLevel(logging.WARNING)
+logging.getLogger('google.cloud').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+
+# --- Configuration ---
+PROJECT_ID = os.environ.get('PROJECT_ID', "spry-bus-425315-p6")
+DATASET_ID = os.environ.get('DATASET_ID', "mycocoons")
+LOCATION = os.environ.get('LOCATION', "US") # BQ Location
+MANIFEST_TABLE_ID = f"{PROJECT_ID}.{DATASET_ID}.pipeline_manifest"
+CLEANING_PUBSUB_TOPIC_ID = os.environ.get('PUBSUB_CLEANING_TOPIC', 'etl-cleaning-requests')
+
+# --- Retry Configuration ---
+RETRYABLE_EXCEPTIONS_TENACITY = ( GoogleAPIError, ConnectionError, TimeoutError, ServiceUnavailable, BadRequest )
+def retry_with_backoff_tenacity(retries=3, backoff_in_seconds=1, max_wait=10, retry_exceptions=RETRYABLE_EXCEPTIONS_TENACITY):
+    if not isinstance(retry_exceptions, tuple): retry_exceptions = (retry_exceptions,)
+    return tenacity_retry(
+        retry=tenacity_if_exception_type(retry_exceptions), stop=stop_after_attempt(retries),
+        wait=wait_exponential(multiplier=backoff_in_seconds, min=1, max=max_wait),
+        before_sleep=lambda rs: logger.warning(f"Retrying {rs.fn.__name__} due to {rs.outcome.exception()} (attempt {rs.attempt_number})"),
+        reraise=True
+    )
+
+bq_load_retry = Retry( initial=1.0, maximum=60.0, multiplier=2.0, deadline=600.0, predicate=if_exception_type(ServiceUnavailable, GoogleAPIError) )
+
+
+# --- GCP Clients ---
+bq_client: Optional[bigquery.Client] = None
+storage_client: Optional[storage.Client] = None
+pubsub_publisher: Optional[pubsub_v1.PublisherClient] = None
+CLEANING_TOPIC_PATH: Optional[str] = None
+
+# --- Client Initialization ---
+def initialize_clients(max_retries=3):
+    """Initializes clients needed for this service."""
+    global bq_client, storage_client, pubsub_publisher, CLEANING_TOPIC_PATH
+    if bq_client and storage_client and (pubsub_publisher or not CLEANING_PUBSUB_TOPIC_ID):
+        logger.debug("Clients already initialized.")
+        return
+
+    logger.info("Attempting to initialize GCP clients (BigQuery, Storage, Pub/Sub)...")
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            if not bq_client:
+                bq_client = bigquery.Client(project=PROJECT_ID)
+                bq_client.list_datasets(max_results=1) # Verify connection
+                logger.info("BigQuery client initialized.")
+            if not storage_client:
+                storage_client = storage.Client(project=PROJECT_ID)
+                logger.info("Storage client initialized.")
+            if CLEANING_PUBSUB_TOPIC_ID and not pubsub_publisher:
+                try:
+                    pubsub_publisher = pubsub_v1.PublisherClient()
+                    CLEANING_TOPIC_PATH = pubsub_publisher.topic_path(PROJECT_ID, CLEANING_PUBSUB_TOPIC_ID)
+                    pubsub_publisher.get_topic(request={"topic": CLEANING_TOPIC_PATH}) # Check existence
+                    logger.info(f"Pub/Sub publisher initialized for cleaning topic: {CLEANING_TOPIC_PATH}")
+                except NotFound:
+                    logger.error(f"Pub/Sub topic '{CLEANING_PUBSUB_TOPIC_ID}' not found. Triggering disabled.")
+                    pubsub_publisher = None; CLEANING_TOPIC_PATH = None
+                except Exception as pubsub_err:
+                     logger.error(f"Failed to initialize Pub/Sub publisher: {pubsub_err}", exc_info=True)
+                     pubsub_publisher = None; CLEANING_TOPIC_PATH = None
+
+            if bq_client and storage_client: # Check essential clients
+                 logger.info("Successfully initialized required GCP clients.")
+                 return
+
+        except Exception as e:
+            retry_count += 1; wait_time = 2 ** retry_count
+            logger.warning(f"Client init error: {e}. Retry {retry_count}/{max_retries} in {wait_time}s", exc_info=False)
+            bq_client = storage_client = pubsub_publisher = None; CLEANING_TOPIC_PATH = None # Reset on error
+            if retry_count >= max_retries:
+                logger.error("Client init failed after retries."); raise RuntimeError("Client initialization failed")
+            time.sleep(wait_time)
+
+
+# =============================================================================
+# == SHARED NAMING UTILITIES (Conceptually in pipeline_utils/naming.py) ==
+# =============================================================================
+
+def _sanitize_bq_name(name_part: str) -> str:
+    """Removes invalid chars for BQ names, converts to lowercase."""
+    if not name_part: return "unknown"
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name_part)
+    sanitized = re.sub(r'_+', '_', sanitized).strip('_')
+    return sanitized.lower() if sanitized else "sanitized_empty"
+
+def get_staging_table_id(blob_name: str, project_id: str = PROJECT_ID, dataset_id: str = DATASET_ID) -> Optional[str]:
+    """Determines the target staging table name (stg_<source>_<identifier>_<date>)"""
+    if not blob_name: return None
+    parts = blob_name.split('/')
+    source_index = 1 if parts[0].lower() == 'mycocoons' and len(parts) > 1 else 0
+    source = parts[source_index] if len(parts) > source_index else "unknown_source"
+    filename = os.path.splitext(os.path.basename(blob_name))[0]
+
+    date_match = re.search(r'(\d{8})$', filename) # Match YYYYMMDD at the end
+    date_suffix = f"_{date_match.group(1)}" if date_match else ""
+    identifier = re.sub(r'(_\d{8})$', '', filename) # Remove date suffix for identifier
+
+    sanitized_source = _sanitize_bq_name(source)
+    sanitized_identifier = _sanitize_bq_name(identifier)
+
+    table_name = f"stg_{sanitized_source}_{sanitized_identifier}{date_suffix}"
+
+    # ** Validation **
+    if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
+        logger.error(f"Generated table name contains invalid characters: '{table_name}' from blob '{blob_name}'")
+        raise ValueError(f"Invalid table name generated: {table_name}")
+    if len(table_name) > 1024: # BQ limit
+        logger.warning(f"Generated table name exceeds 1024 chars, will be truncated: '{table_name}'")
+        table_name = table_name[:1024]
+
+    full_table_id = f"{project_id}.{dataset_id}.{table_name}"
+    logger.info(f"Determined target table ID: {full_table_id} for blob {blob_name}")
+    return full_table_id
+
+from google.cloud import bigquery
+import logging
+
+logger = logging.getLogger("journey_builder")
+logging.basicConfig(level=logging.INFO)
+
+PROJECT_ID = "spry-bus-425315-p6"
+DATASET_ID = "mycocoons"
+LOCATION = "US"
+bq_client = bigquery.Client(project=PROJECT_ID, location=LOCATION)
+
+def list_clean_tables_for_date(dataset: str, date_suffix: str):
+    """Returns a list of clean table names in BigQuery with the specified date suffix."""
+    table_list = list(bq_client.list_tables(dataset))
+    matching_tables = [
+        t.table_id for t in table_list
+        if t.table_id.startswith("clean_mycocoons_") and t.table_id.endswith(date_suffix)
+    ]
+    logger.info(f"Found tables for {date_suffix}: {matching_tables}")
+    return matching_tables
+
+# =============================================================================
+
+
+# --- Manifest Functions ---
+# (Keep check_blob_in_manifest and add_or_update_blob_in_manifest as before)
+@retry_with_backoff_tenacity()
+def check_blob_in_manifest(blob_name: str) -> Optional[Dict[str, Any]]:
+    """Checks the latest manifest entry for a blob."""
+    if not bq_client: raise RuntimeError("BigQuery client not initialized.")
+    query = f"SELECT processing_status, retry_count FROM `{MANIFEST_TABLE_ID}` WHERE blob_name = @blob_name ORDER BY discovered_at DESC LIMIT 1"
+    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("blob_name", "STRING", blob_name)])
+    try:
+        results = list(bq_client.query(query, job_config=job_config).result(timeout=60))
+        return dict(results[0].items()) if results else None
+    except Exception as e: logger.error(f"Error checking manifest for blob {blob_name}: {e}", exc_info=True); raise
+
+@retry_with_backoff_tenacity(retries=4, backoff_in_seconds=1.5, max_wait=15)
+def add_or_update_blob_in_manifest(blob: storage.Blob, status: str, error_msg: Optional[str] = None, target_table: Optional[str] = None) -> None:
+    """Adds or updates a blob entry in the manifest table using MERGE."""
+    if not bq_client: raise RuntimeError("BigQuery client not initialized.")
+    if not blob: logger.error("Invalid blob object passed to manifest update."); return
+    now_ts_utc = datetime.utcnow()
+    processed_ts = now_ts_utc if status in ["SUCCESS", "FAILED"] else None
+    # Ensure target_table is full path if provided
+    if target_table and '.' not in target_table:
+        target_table = f"{PROJECT_ID}.{DATASET_ID}.{target_table.split('.')[-1]}" # Use only table name part if full path wasn't passed
+
+    params = [bigquery.ScalarQueryParameter("blob_name", "STRING", blob.name), bigquery.ScalarQueryParameter("bucket_name", "STRING", blob.bucket.name), bigquery.ScalarQueryParameter("size_bytes", "INTEGER", blob.size), bigquery.ScalarQueryParameter("content_type", "STRING", blob.content_type), bigquery.ScalarQueryParameter("md5_hash", "STRING", blob.md5_hash), bigquery.ScalarQueryParameter("crc32c", "STRING", blob.crc32c), bigquery.ScalarQueryParameter("generation", "INTEGER", blob.generation), bigquery.ScalarQueryParameter("discovered_at", "TIMESTAMP", now_ts_utc), bigquery.ScalarQueryParameter("processed_at", "TIMESTAMP", processed_ts), bigquery.ScalarQueryParameter("processing_status", "STRING", status), bigquery.ScalarQueryParameter("target_table", "STRING", target_table), bigquery.ScalarQueryParameter("error_message", "STRING", error_msg)]
+    merge_sql = f""" MERGE `{MANIFEST_TABLE_ID}` T USING (SELECT @blob_name AS blob_name) S ON T.blob_name = S.blob_name WHEN MATCHED THEN UPDATE SET processing_status=@processing_status, processed_at=COALESCE(@processed_at,T.processed_at), error_message=@error_message, target_table=COALESCE(@target_table,T.target_table), retry_count=T.retry_count+CASE WHEN T.processing_status!='FAILED' AND @processing_status='FAILED' THEN 1 WHEN T.processing_status='FAILED' AND @processing_status='PENDING' THEN 0 WHEN T.processing_status='FAILED' AND @processing_status='FAILED' THEN 1 ELSE 0 END, size_bytes=CASE WHEN T.generation!=@generation THEN @size_bytes ELSE T.size_bytes END, md5_hash=CASE WHEN T.generation!=@generation THEN @md5_hash ELSE T.md5_hash END, crc32c=CASE WHEN T.generation!=@generation THEN @crc32c ELSE T.crc32c END, generation=@generation, content_type=@content_type WHEN NOT MATCHED THEN INSERT (blob_name, bucket_name, size_bytes, content_type, md5_hash, crc32c, generation, discovered_at, processed_at, processing_status, target_table, error_message, retry_count) VALUES (@blob_name, @bucket_name, @size_bytes, @content_type, @md5_hash, @crc32c, @generation, @discovered_at, @processed_at, @processing_status, @target_table, @error_message, CASE WHEN @processing_status='FAILED' THEN 1 ELSE 0 END) """
+    job_config=bigquery.QueryJobConfig(query_parameters=params)
+    try:
+        logger.info(f"Updating manifest: {blob.name} -> {status}.")
+        query_job=bq_client.query(merge_sql, job_config=job_config)
+        query_job.result(timeout=120)
+        logger.info(f"Manifest update OK: {blob.name}.")
+    except Exception as e:
+        if "streaming buffer" in str(e).lower(): logger.warning(f"Manifest MERGE conflict for {blob.name}. Will retry. Error: {e}")
+        else: logger.error(f"Manifest MERGE error for {blob.name}: {e}", exc_info=True)
+        raise
+
+
+# --- Core Ingestion Logic ---
+def load_blob_to_bigquery(blob: storage.Blob, target_table_id: str) -> Tuple[bool, Optional[str]]:
+    """Loads a single blob into a BigQuery table using load_table_from_uri."""
+    # *** FIX applied: Separated initial checks ***
+    if not bq_client:
+        raise RuntimeError("BigQuery client not initialized.")
+    if not blob:
+        logger.error("Invalid blob object passed to load_blob_to_bigquery.")
+        return False, None
+    if not target_table_id:
+        logger.error("Target table ID not provided to load_blob_to_bigquery.")
+        return False, None
+
+    uri = f"gs://{blob.bucket.name}/{blob.name}"
+    try:
+        table_ref = bigquery.TableReference.from_string(target_table_id)
+    except ValueError as e:
+        logger.error(f"Invalid target table ID format '{target_table_id}': {e}")
+        return False, None # Return None for table_id as it was invalid
+
+    source_format = None
+    if blob.name.lower().endswith('.csv'): source_format=bigquery.SourceFormat.CSV
+    elif blob.name.lower().endswith(('.json','.jsonl')): source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+    elif blob.name.lower().endswith('.parquet'): source_format=bigquery.SourceFormat.PARQUET
+    if not source_format:
+        logger.error(f"Unsupported format: {blob.name}")
+        return False, target_table_id
+
+    job_config=bigquery.LoadJobConfig(source_format=source_format,autodetect=True,write_disposition="WRITE_TRUNCATE",create_disposition="CREATE_IF_NEEDED")
+    if source_format == bigquery.SourceFormat.CSV:
+        job_config.skip_leading_rows=1
+        job_config.allow_quoted_newlines=True
+        job_config.ignore_unknown_values=True
+
+    logger.info(f"Starting load: {uri} -> {target_table_id}")
+    load_job=None
+    try:
+        load_job=bq_client.load_table_from_uri(uri,table_ref,job_config=job_config,retry=bq_load_retry)
+        logger.info(f"Load job: {load_job.job_id}. Waiting...")
+        load_job.result(timeout=600) # 10 min timeout
+
+        if load_job.errors:
+            error_str="; ".join([f"{err.get('reason','?')}: {err.get('message','?')}" for err in load_job.errors])
+            logger.error(f"Load job {load_job.job_id} failed: {error_str}")
+            raise GoogleAPIError(f"Load job failed: {error_str}")
+        else:
+            final_job=bq_client.get_job(load_job.job_id, location=load_job.location) # Add location
+            rows_loaded = final_job.output_rows if hasattr(final_job,'output_rows') else 'unknown'
+            logger.info(f"Load job {load_job.job_id} OK. Rows: {rows_loaded} -> {target_table_id}")
+            return True, target_table_id
+    except Exception as e:
+        job_id_str=f" (Job ID: {load_job.job_id})" if load_job else ""
+        logger.error(f"Load failed for {uri}{job_id_str}: {e}",exc_info=True)
+        raise e # Reraise the exception
+
+
+# --- Triggering Next Step ---
+@retry_with_backoff_tenacity(retries=2)
+def trigger_cleaning_job(target_table_id: str, blob_name: str):
+    """Publishes a message to trigger the cleaning job (Cell 3)."""
+    if not pubsub_publisher or not CLEANING_TOPIC_PATH:
+        logger.warning(f"Pub/Sub cleaning trigger disabled for {CLEANING_PUBSUB_TOPIC_ID}. Skipping.")
+        return
+
+    message_data = { "target_table_id": target_table_id, "source_blob_name": blob_name, "trigger_timestamp": datetime.utcnow().isoformat() }
+    message_body = json.dumps(message_data).encode("utf-8")
+    try:
+        future = pubsub_publisher.publish(CLEANING_TOPIC_PATH, message_body)
+        future.result(timeout=30)
+        logger.info(f"Published cleaning request for {target_table_id} to {CLEANING_PUBSUB_TOPIC_ID}.")
+    except Exception as e:
+        logger.error(f"Failed cleaning publish for {target_table_id}: {e}", exc_info=True)
+        raise
+
+# --- Main Handler Function (for Cloud Function/Run) ---
+def handle_gcs_event(event: Dict[str, Any], context: Any):
+    """Cloud Function/Run entry point triggered by Pub/Sub message from Cell 1."""
+    start_time = time.time()
+    try: initialize_clients()
+    except Exception as init_err: logger.critical(f"Client init failed: {init_err}", exc_info=True); return
+
+    blob_name=None; blob=None; target_table_id=None; status=None; error_message=None; load_exception=None; processed_or_failed=False
+
+    try:
+        if 'data' not in event: raise ValueError("No 'data' field")
+        message_data=json.loads(base64.b64decode(event['data']).decode('utf-8'))
+        bucket_name=message_data.get('bucket_name'); blob_name=message_data.get('blob_name')
+        if not bucket_name or not blob_name: raise ValueError("Missing bucket/blob name")
+        logger.info(f"Received trigger for gs://{bucket_name}/{blob_name}")
+
+        blob=storage_client.bucket(bucket_name).get_blob(blob_name)
+        if not blob: raise FileNotFoundError(f"Blob not found: gs://{bucket_name}/{blob_name}")
+        if blob.size==0: logger.info(f"Skipping zero-byte blob: {blob_name}"); status="SKIPPED_EMPTY"; return
+
+        manifest_entry=check_blob_in_manifest(blob_name)
+        if manifest_entry:
+            current_status=manifest_entry.get('processing_status')
+            if current_status=="SUCCESS": logger.info(f"Blob {blob_name} already SUCCESS. Skipping."); status="SKIPPED_ALREADY_SUCCESS"; return
+            elif current_status=="PROCESSING": logger.warning(f"Blob {blob_name} already PROCESSING. Skipping."); status="SKIPPED_ALREADY_PROCESSING"; return
+
+        processed_or_failed=True; status="FAILED"; error_message="Processing did not complete."
+        add_or_update_blob_in_manifest(blob, status="PROCESSING") # Update status FIRST
+
+        target_table_id=get_staging_table_id(blob_name) # Use helper
+        if not target_table_id: raise ValueError(f"Cannot determine target table for {blob_name}")
+
+        load_success, actual_table_id = load_blob_to_bigquery(blob, target_table_id)
+        target_table_id = actual_table_id if actual_table_id else target_table_id # Use returned ID
+
+        if load_success: status="SUCCESS"; error_message=None; logger.info(f"Successfully loaded {blob_name} -> {target_table_id}")
+        else: error_message=f"load_blob_to_bigquery failed for {blob_name}"; raise RuntimeError(error_message) # Should be caught by general Exception
+
+    except FileNotFoundError as e: status="FAILED"; error_message=str(e); logger.error(error_message); processed_or_failed=True
+    except ValueError as e: status="FAILED"; error_message=f"Validation error for {blob_name}: {str(e)}"; logger.error(error_message); processed_or_failed=True
+    except Exception as e: status="FAILED"; load_exception=e; error_message=f"Error processing {blob_name}: {str(e)}"; logger.error(error_message, exc_info=True); processed_or_failed=True
+
+    finally:
+        final_status_to_log = "UNKNOWN"
+        if processed_or_failed and blob:
+            final_error_msg=str(load_exception) if load_exception else error_message
+            try: add_or_update_blob_in_manifest(blob, status=status, error_msg=final_error_msg, target_table=target_table_id if status=="SUCCESS" else None); final_status_to_log=status
+            except Exception as manifest_err: logger.error(f"CRITICAL: Failed manifest update to {status} for {blob_name}: {manifest_err}", exc_info=True); final_status_to_log=f"{status} (MANIFEST_UPDATE_FAILED)"
+        elif status and "SKIPPED" in status: logger.info(f"Processing skipped for {blob_name}. Reason: {status}"); final_status_to_log=status
+        elif blob_name: logger.error(f"Cannot update manifest for {blob_name} (no blob object/no processing attempt)."); final_status_to_log="FAILED (PRE_PROCESS_ERROR)"
+        else: logger.error("Cannot update manifest status; blob name unknown."); final_status_to_log="FAILED (UNKNOWN_BLOB)"
+
+        if status=="SUCCESS" and target_table_id:
+            try: trigger_cleaning_job(target_table_id, blob_name)
+            except Exception as trigger_err: logger.error(f"Loaded {blob_name}, but failed cleaning trigger: {trigger_err}", exc_info=True)
+
+        end_time=time.time(); logger.info(f"Finished trigger {blob_name or 'unknown blob'} in {end_time-start_time:.2f}s. Status: {final_status_to_log}")
+
+
+# --- Entry point for Cloud Functions/Run ---
+# See previous response for example Flask/functions_framework wrappers
+# If running this script directly for some reason (not recommended for production):
+# import sys
+# if __name__ == "__main__":
+#     # Basic CLI execution for testing - requires manual event payload
+#     if len(sys.argv) > 1 and sys.argv[1] == 'test':
+#          test_blob_name = "mycocoons/Facebook/FBADS_AD_20220101.csv"
+#          test_bucket_name = "mycocoons"
+#          logger.info(f"--- Running CLI test for blob: {test_blob_name} ---")
+#          test_message_data = { "blob_name": test_blob_name, "bucket_name": test_bucket_name, "trigger_timestamp": datetime.utcnow().isoformat() }
+#          test_event_data = base64.b64encode(json.dumps(test_message_data).encode('utf-8'))
+#          test_event = {"data": test_event_data}
+#          handle_gcs_event(test_event, None)
+#     else:
+#          print("Use 'python your_script_name.py test' for basic local test.")
+

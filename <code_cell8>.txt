@@ -1,0 +1,73 @@
+#Cell 8: Neo4j Export
+from neo4j import GraphDatabase
+
+# Neo4j connection details
+neo4j_uri = "neo4j+s://ad31a2c8.databases.neo4j.io"
+neo4j_username = "neo4j"
+neo4j_password = "KfwYsIvWnGFpv3Myd6bonWxjzKF6baRa6iDs9uBpQeU"
+driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+
+def export_to_neo4j(table_id):
+    """Exports data from a BigQuery table to Neo4j by creating nodes."""
+    try:
+        with driver.session() as session:
+            query = f"SELECT * FROM `{dataset_id}.{table_id}_cleaned`"
+            query_job = bq_client.query(query)
+            results = query_job.result()
+
+            for row in results:
+                if table_id.startswith('Facebook'):
+                    node_label = 'FacebookAd'
+                    merge_key = 'ad_id'
+                    node_properties = {
+                        'ad_id': row['ad_id'],
+                        'campaign_id': row['campaign_id'],
+                        # ... other properties
+                    }
+                elif table_id.startswith('GAAnalytics'):
+                    node_label = 'WebsiteVisit'
+                    merge_key = 'visitId'  # Assuming 'visitId' is a unique identifier
+                    node_properties = {
+                        'visitId': row['visitId'],
+                        'visitorId': row['visitorId'],
+                        # ... other properties
+                    }
+                # ... (Add logic for other table prefixes and node types)
+                else:
+                    logger.warning(f"No specific export configuration defined for table: {table_id}")
+                    continue
+
+                merge_value = node_properties.pop(merge_key)
+
+                cypher_query = f"""
+                    MERGE (n:{node_label} {{{merge_key}: $merge_value}})
+                    SET n = $properties
+                """
+
+                try:
+                    session.run(cypher_query, merge_value=merge_value, properties=node_properties)
+                    logger.info(f"Node created for {node_label} with {merge_key}: {merge_value}")
+                except ConstraintError as e:
+                    logger.error(f"Constraint violation while creating node: {merge_value}")
+                    logger.error(str(e))
+                except Exception as e:
+                    logger.error(f"Error while creating node: {merge_value}")
+                    logger.error(str(e))
+
+        logger.info(f"Data export to Neo4j completed for table: {table_id}")
+
+    except exceptions.NotFound as e:
+        logger.error(f"Table not found: {table_id}")
+        logger.error(str(e))
+    except Exception as e:
+        logger.error(f"Error occurred while exporting data to Neo4j for table: {table_id}")
+        logger.error(str(e))
+
+# Get a list of cleaned tables in the dataset
+cleaned_tables = [table.table_id for table in client.list_tables(dataset_id) if "_cleaned" in table.table_id]
+
+# Export data to Neo4j
+for table_id in cleaned_tables:
+    logger.info(f"Exporting data to Neo4j for table: {table_id}")
+    export_to_neo4j(table_id)
+    logger.info(f"Data export completed for table: {table_id}")
