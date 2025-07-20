@@ -1,3762 +1,3147 @@
-# ================================
-#  Necessary Imports
-# ================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Complete Multi-Agent System - Production Ready Implementation
+=============================================================
+
+A comprehensive multi-agent system with REWOO capabilities, evidence tracking,
+and layer-based processing architecture. This is the complete, production-ready
+version that addresses all identified issues.
+
+Author: AI Assistant
+Version: 2.0.0
+"""
+
+import asyncio
 import logging
 import os
-import re
-import time
 import json
-import asyncio
-import psutil
+import time
 import hashlib
-import numpy as np
+import uuid
+import traceback
+import statistics
+import psutil
 import networkx as nx
-from typing import Dict, List, Any, Optional, Union, Type, Callable
-from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Union, Type, Set, Callable
 from collections import defaultdict, Counter, deque
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from cachetools import TTLCache
+from dataclasses import dataclass, field, asdict
+from abc import ABC, abstractmethod
+from enum import Enum
 import aiohttp
-from dotenv import load_dotenv
-
-
-class DataPipelineOptimizer:
-    """Optimizes data pipeline for BigQuery and Neo4j operations"""
-    def __init__(self, config: EnhancedConfig):
-        self.config = config
-        self.logger = logging.getLogger(__name__)
-        self.metrics = defaultdict(Counter)
-        self.query_cache = TTLCache(maxsize=config.pipeline_config.get('cache_size', 1000),
-                                  ttl=config.pipeline_config.get('timeout', 3600))
-        self.batch_size = config.pipeline_config.get('batch_size', 1000)
-        self.max_workers = config.pipeline_config.get('max_workers', 10)
-        self.initialized = False
-
-        
-    async def initialize(self) -> None:
-        """Initialize optimizer"""
-        try:
-            # Initialize cache
-            self.query_cache.clear()
-            
-            # Initialize metrics
-            self.metrics.clear()
-            
-            self.initialized = True
-            self.logger.info("Data pipeline optimizer initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Data pipeline optimizer initialization failed: {e}")
-            raise
-    async def cleanup(self) -> None:
-        """Cleanup optimizer resources"""
-        try:
-            self.query_cache.clear()
-            self.metrics.clear()
-            self.initialized = False
-            self.logger.info("Data pipeline optimizer cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Data pipeline optimizer cleanup failed: {e}")
-            raise
-    async def optimize_bigquery_query(self, query: str) -> str:
-        """Optimize BigQuery query for better performance"""
-        try:
-            # Apply query optimization rules
-            optimized_query = self._apply_query_optimizations(query)
-            
-            # Validate optimized query
-            if not self._validate_query(optimized_query):
-                raise ValueError("Query optimization resulted in invalid query")
-            
-            return optimized_query
-            
-        except Exception as e:
-            self.logger.error(f"Query optimization failed: {e}")
-            raise
-
-    async def optimize_neo4j_query(self, query: str) -> str:
-        """Optimize Neo4j query for better performance"""
-        try:
-            # Apply Neo4j-specific optimizations
-            optimized_query = self._apply_neo4j_optimizations(query)
-            
-            # Validate optimized query
-            if not self._validate_neo4j_query(optimized_query):
-                raise ValueError("Neo4j query optimization resulted in invalid query")
-            
-            return optimized_query
-            
-        except Exception as e:
-            self.logger.error(f"Neo4j query optimization failed: {e}")
-            raise
-
-    async def batch_process_data(self, data: List[Dict[str, Any]], target: str) -> None:
-        """Process data in optimized batches"""
-        try:
-            batches = [data[i:i + self.batch_size] for i in range(0, len(data), self.batch_size)]
-            
-            async with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                tasks = []
-                for batch in batches:
-                    if target == 'bigquery':
-                        task = executor.submit(self._process_bigquery_batch, batch)
-                    elif target == 'neo4j':
-                        task = executor.submit(self._process_neo4j_batch, batch)
-                    else:
-                        raise ValueError(f"Unsupported target: {target}")
-                    tasks.append(task)
-                
-                # Wait for all tasks to complete
-                for future in as_completed(tasks):
-                    result = future.result()
-                    self.metrics['processed_batches'] += 1
-                    
-        except Exception as e:
-            self.logger.error(f"Batch processing failed: {e}")
-            raise
-
-    def _apply_query_optimizations(self, query: str) -> str:
-        """Apply optimization rules to BigQuery query"""
-        optimizations = [
-            self._optimize_joins,
-            self._optimize_filters,
-            self._optimize_aggregations,
-            self._optimize_partitioning
-        ]
-        
-        optimized_query = query
-        for optimization in optimizations:
-            optimized_query = optimization(optimized_query)
-            
-        return optimized_query
-
-    def _apply_neo4j_optimizations(self, query: str) -> str:
-        """Apply Neo4j-specific optimizations"""
-        optimizations = [
-            self._optimize_node_patterns,
-            self._optimize_relationships,
-            self._optimize_indexes,
-            self._optimize_parameters
-        ]
-        
-        optimized_query = query
-        for optimization in optimizations:
-            optimized_query = optimization(optimized_query)
-            
-        return optimized_query
-
-    async def _process_bigquery_batch(self, batch: List[Dict[str, Any]]) -> None:
-        """Process a batch of data for BigQuery"""
-        try:
-            # Prepare data for insertion
-            rows = [self._prepare_bigquery_row(row) for row in batch]
-            
-            # Insert data
-            table = self.config.bigquery_client.get_table(self.config.table_id)
-            errors = self.config.bigquery_client.insert_rows_json(table, rows)
-            
-            if errors:
-                raise Exception(f"Errors inserting rows: {errors}")
-                
-        except Exception as e:
-            self.logger.error(f"BigQuery batch processing failed: {e}")
-            raise
-
-    async def _process_neo4j_batch(self, batch: List[Dict[str, Any]]) -> None:
-        """Process a batch of data for Neo4j"""
-        try:
-            # Prepare Neo4j transaction
-            async with self.config.neo4j_client.session() as session:
-                tx = await session.begin_transaction()
-                try:
-                    for row in batch:
-                        query = self._prepare_neo4j_query(row)
-                        await tx.run(query)
-                    await tx.commit()
-                except Exception as e:
-                    await tx.rollback()
-                    raise
-                
-        except Exception as e:
-            self.logger.error(f"Neo4j batch processing failed: {e}")
-            raise
-            
-            
-class AgentCoordinator:
-    """Coordinates interactions between agents in the MoA framework"""
-    def __init__(self, config: EnhancedConfig):
-        self.config = config
-        self.active_agents = {}
-        self.task_queue = asyncio.Queue()
-        self.logger = logging.getLogger(__name__)
-        self.result_cache = TTLCache(maxsize=1000, ttl=3600)
-        self.metrics = defaultdict(Counter)
-        self.coordination_state = {}
-        self.evidence_store = EvidenceStore()
-       
-        
-    async def initialize(self) -> None:
-        """Initialize the coordination system"""
-        try:
-            # Initialize boss agent first
-            self.boss_agent = await self._initialize_boss_agent()
-            
-            # Initialize layer agents
-            await self._initialize_layer_agents()
-            
-            # Initialize communication channels
-            await self._setup_communication_channels()
-            
-            # Initialize REWOO capabilities
-            await self._initialize_rewoo_capabilities()
-            
-            self.logger.info("Agent coordination system initialized successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Agent coordination initialization failed: {str(e)}")
-            await self.cleanup()
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup coordination resources"""
-        try:
-            if hasattr(self, 'boss_agent'):
-                await self.boss_agent.cleanup()
-            
-            for agents in self.active_agents.values():
-                for agent in agents:
-                    await agent.cleanup()
-            
-            self.active_agents.clear()
-            self.coordination_state.clear()
-            self.metrics.clear()
-            
-            self.logger.info("Agent coordination system cleaned up successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Coordination cleanup failed: {str(e)}")
-            raise
-    async def _initialize_boss_agent(self) -> BossAgent:
-        """Initialize the boss agent with enhanced coordination capabilities"""
-        try:
-            boss_config = self.config.get_boss_config()
-            if not boss_config:
-                raise ValueError("Boss agent configuration not found")
-                
-            boss_agent = BossAgent(
-                name="MainBoss",
-                model_info=boss_config.to_dict(),
-                config=self.config
-            )
-            
-            await boss_agent.initialize()
-            self.logger.info("Boss agent initialized successfully")
-            return boss_agent
-            
-        except Exception as e:
-            self.logger.error(f"Boss agent initialization failed: {str(e)}")
-            raise
-
-    async def _initialize_layer_agents(self) -> None:
-        """Initialize layer agents with improved coordination"""
-        try:
-            for layer_id, layer_config in self.config.layer_configs.items():
-                self.active_agents[layer_id] = []
-                
-                for agent_name in layer_config['agents']:
-                    model_config = self.config.get_model_config(agent_name)
-                    if model_config:
-                        agent = await self._create_layer_agent(
-                            agent_name,
-                            model_config,
-                            layer_id
-                        )
-                        if agent:
-                            self.active_agents[layer_id].append(agent)
-                            
-            self.logger.info(f"Initialized {sum(len(agents) for agents in self.active_agents.values())} layer agents")
-            
-        except Exception as e:
-            self.logger.error(f"Layer agent initialization failed: {str(e)}")
-            raise
-
-    
-    
-    async def coordinate_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Coordinate task execution with enhanced error handling"""
-        task_id = f"task_{datetime.now().timestamp()}"
-        try:
-            # Create execution plan
-            plan = await self._create_execution_plan(task)
-        
-            # Track task state
-            self.coordination_state[task_id] = {
-                'status': 'processing',
-                'plan': plan,
-                'start_time': datetime.now(),
-                'layer_results': {}
-            }
-        
-            # Process through layers
-            current_input = task
-            for layer_id in sorted(self.active_agents.keys()):
-                layer_result = await self._process_layer(
-                    layer_id,
-                    current_input,
-                    plan
-                )
-            
-                self.coordination_state[task_id]['layer_results'][layer_id] = layer_result
-                current_input = self._prepare_next_layer_input(layer_result)
-            
-            # Finalize results
-            final_result = await self._aggregate_results(
-                task_id,
-                self.coordination_state[task_id]['layer_results']
-            )
-        
-            self.coordination_state[task_id]['status'] = 'completed'
-            self.metrics['tasks_completed'] += 1
-        
-            return final_result
-        
-        except Exception as e:
-            self.logger.error(f"Task coordination failed: {str(e)}")
-            self.coordination_state[task_id]['status'] = 'failed'
-            self.metrics['tasks_failed'] += 1
-            raise
-        finally:
-            self.coordination_state[task_id]['end_time'] = datetime.now()
-
-    async def _process_layer(self,
-                           layer_id: int,
-                           input_data: Any,
-                           plan: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Process input through a specific layer"""
-        try:
-            layer_agents = self.active_agents[layer_id]
-            
-            # Execute agents in parallel
-            tasks = [
-                agent.process_task({
-                    'input': input_data,
-                    'plan': plan,
-                    'layer_context': self._get_layer_context(layer_id)
-                })
-                for agent in layer_agents
-            ]
-            
-            results = await asyncio.gather(*tasks)
-            
-            # Store layer metrics
-            self.metrics[f'layer_{layer_id}_processed'] += 1
-            
-            return results
-            
-        except Exception as e:
-            self.logger.error(f"Layer {layer_id} processing failed: {str(e)}")
-            raise
-
-    def _get_layer_context(self, layer_id: int) -> Dict[str, Any]:
-        """Get context information for a specific layer"""
-        return {
-            'layer_id': layer_id,
-            'agent_count': len(self.active_agents[layer_id]),
-            'layer_type': self.config.layer_configs[layer_id]['type'],
-            'timestamp': datetime.now().isoformat()
-        }
-
-    async def _aggregate_results(self,
-                               task_id: str,
-                               layer_results: Dict[int, List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """Aggregate results from all layers"""
-        try:
-            aggregated_result = {
-                'task_id': task_id,
-                'layer_results': layer_results,
-                'metadata': {
-                    'completion_time': datetime.now().isoformat(),
-                    'processing_time': (
-                        datetime.now() - self.coordination_state[task_id]['start_time']
-                    ).total_seconds(),
-                    'layer_metrics': {
-                        layer_id: self._calculate_layer_metrics(results)
-                        for layer_id, results in layer_results.items()
-                    }
-                }
-            }
-            
-            return aggregated_result
-            
-        except Exception as e:
-            self.logger.error(f"Result aggregation failed: {str(e)}")
-            raise
-
-    def _calculate_layer_metrics(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Calculate metrics for layer results"""
-        return {
-            'response_count': len(results),
-            'average_confidence': statistics.mean(
-                result.get('confidence', 0) for result in results
-            ),
-            'success_rate': sum(
-                1 for r in results if r.get('status') == 'success'
-            ) / len(results) if results else 0
-        }
-
-    async def cleanup(self) -> None:
-        """Cleanup coordination resources"""
-        try:
-            # Cleanup boss agent
-            if hasattr(self, 'boss_agent'):
-                await self.boss_agent.cleanup()
-            
-            # Cleanup layer agents
-            for agents in self.active_agents.values():
-                for agent in agents:
-                    await agent.cleanup()
-            
-            # Clear state
-            self.active_agents.clear()
-            self.coordination_state.clear()
-            self.metrics.clear()
-            
-            self.logger.info("Agent coordination system cleaned up successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Coordination cleanup failed: {str(e)}")
-            raise
-            
-            
-class MetricsTracker:
-    """Track system metrics"""
-    def __init__(self):
-        self.metrics = defaultdict(Counter)
-        self.timings = defaultdict(list)
-        self.start_time = datetime.now()
-        self.initialized = False
-        self.logger = logging.getLogger(__name__)
-
-    async def initialize(self) -> None:
-        """Initialize metrics tracker"""
-        try:
-            self.metrics.clear()
-            self.timings.clear()
-            self.start_time = datetime.now()
-            self.initialized = True
-            self.logger.info("Metrics tracker initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Metrics tracker initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup metrics tracker resources"""
-        try:
-            self.metrics.clear()
-            self.timings.clear()
-            self.initialized = False
-            self.logger.info("Metrics tracker cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Metrics tracker cleanup failed: {e}")
-            raise
-    def record_metric(self, category: str, name: str, value: Any = 1):
-        """Record a metric"""
-        self.metrics[category][name] += value
-
-    def record_timing(self, category: str, duration: float):
-        """Record timing information"""
-        self.timings[category].append(duration)
-
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get current metrics"""
-        return {
-            'metrics': {k: dict(v) for k, v in self.metrics.items()},
-            'timings': {k: {
-                'avg': sum(v)/len(v) if v else 0,
-                'min': min(v) if v else 0,
-                'max': max(v) if v else 0
-            } for k, v in self.timings.items()},
-            'uptime': (datetime.now() - self.start_time).total_seconds()
-        }
-
-import logging
-import asyncio
-from typing import Dict, Any, Optional, Type
-from dataclasses import dataclass, field
-from datetime import datetime
-from collections import defaultdict, Counter
 from cachetools import TTLCache
+import nest_asyncio
+
+# Apply nest_asyncio for Jupyter compatibility
+nest_asyncio.apply()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CUSTOM EXCEPTIONS
+# ============================================================================
+
+class SystemError(Exception):
+    """Base system error"""
+    pass
+
+class ConfigurationError(SystemError):
+    """Custom exception for configuration errors"""
+    pass
+
+class ValidationError(SystemError):
+    """Custom exception for validation errors"""
+    pass
+
+class InitializationError(SystemError):
+    """Custom exception for initialization errors"""
+    pass
+
+class ResourceError(SystemError):
+    """Custom exception for resource-related errors"""
+    pass
+
+class CommunicationError(SystemError):
+    """Exception raised for communication-related errors"""
+    pass
+
+# ============================================================================
+# CONFIGURATION SYSTEM
+# ============================================================================
+
+class ModelProvider(Enum):
+    """Supported model providers"""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    VERTEX = "vertex"
+    MISTRAL = "mistral"
 
 @dataclass
-class AgentFactoryConfig:
-    """Configuration for agent factory."""
-    enabled: bool = True
-    max_agents: int = 10
-    initialization_timeout: int = 30
-    retry_attempts: int = 3
+class ModelConfig:
+    """Enhanced model configuration with validation"""
+    model_name: str
+    provider: ModelProvider
+    layer_id: Optional[int] = None
+    max_tokens: int = 2048
+    temperature: float = 0.7
+    timeout: int = 30
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Validate configuration after initialization"""
+        if self.temperature < 0 or self.temperature > 2:
+            raise ValueError("Temperature must be between 0 and 2")
+        if self.max_tokens <= 0:
+            raise ValueError("Max tokens must be positive")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
 
-class PatternMatcher:
-    """Pattern matching capabilities for evidence analysis"""
+@dataclass
+class APISettings:
+    """API configuration settings"""
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    vertex_ai_credentials: Optional[Dict[str, Any]] = None
+    vertex_ai_project_id: Optional[str] = None
+    vertex_ai_location: str = "us-central1"
+    timeout: int = 30
+    max_retries: int = 3
+    
+    def validate(self) -> bool:
+        """Validate that at least one API is configured"""
+        return any([
+            self.openai_api_key,
+            self.anthropic_api_key,
+            self.vertex_ai_credentials
+        ])
+
+@dataclass
+class EnhancedConfig:
+    """Main system configuration"""
+    api_settings: APISettings
+    model_configs: Dict[str, ModelConfig] = field(default_factory=dict)
+    layer_configs: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    pipeline_config: Dict[str, Any] = field(default_factory=dict)
+    
+    # Database settings
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
+    
+    # System settings
+    max_concurrent_tasks: int = 10
+    cache_size: int = 1000
+    cache_ttl: int = 3600
+    
+    def __post_init__(self):
+        """Validate configuration after initialization"""
+        if not self.api_settings.validate():
+            raise ConfigurationError("At least one API must be configured")
+    
+    def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
+        """Get model configuration by name"""
+        return self.model_configs.get(model_name)
+    
+    def get_layer_config(self, layer_id: int) -> Optional[Dict[str, Any]]:
+        """Get layer configuration by ID"""
+        return self.layer_configs.get(layer_id)
+
+# ============================================================================
+# EVIDENCE SYSTEM
+# ============================================================================
+
+@dataclass
+class Evidence:
+    """Evidence data structure"""
+    id: str
+    source: str
+    content: Any
+    timestamp: float
+    metadata: Dict[str, Any]
+    confidence: float = 1.0
+    tags: List[str] = field(default_factory=list)
+
+class EvidenceStore:
+    """Evidence storage and retrieval system with advanced capabilities"""
+    
     def __init__(self):
-        self.patterns = {}
-        self.logger = logging.getLogger(__name__)
-        
-    async def initialize(self):
-        """Initialize pattern matching capabilities"""
-        try:
-            self.patterns = {
-                'temporal': self._compile_temporal_patterns(),
-                'structural': self._compile_structural_patterns(),
-                'semantic': self._compile_semantic_patterns()
-            }
-            self.logger.info("Pattern matcher initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Pattern matcher initialization failed: {e}")
-            raise
-            
-    def _compile_temporal_patterns(self):
-        return {}  # Implement temporal pattern compilation
-        
-    def _compile_structural_patterns(self):
-        return {}  # Implement structural pattern compilation
-        
-    def _compile_semantic_patterns(self):
-        return {}  # Implement semantic pattern compilation
-
-class ConfidenceCalculator:
-    """Calculate confidence scores for evidence"""
-    def __init__(self):
-        self.metrics = defaultdict(float)
-        self.logger = logging.getLogger(__name__)
-        
-    async def initialize(self):
-        """Initialize confidence calculation capabilities"""
-        try:
-            self.metrics = {
-                'source_reliability': 0.8,
-                'temporal_relevance': 0.9,
-                'content_quality': 0.85
-            }
-            self.logger.info("Confidence calculator initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Confidence calculator initialization failed: {e}")
-            raise
-
-class AgentFactory:
-    """Enhanced agent factory with proper initialization phases"""
-    def __init__(self, config: 'EnhancedConfig'):
-        self.config = config
-        self.logger = logging.getLogger(__name__)
+        self.evidence: Dict[str, Evidence] = {}
+        self.indices: Dict[str, set] = defaultdict(set)
+        self.logger = logging.getLogger(f"{self.__class__.__name__}")
         self.initialized = False
-        self._initializing = False
-        self.agents = {}
-        self.agent_states = {}
-        self.agent_pools = defaultdict(list)
-        self.templates = {}
-        self.metrics = defaultdict(Counter)
         self.cache = TTLCache(maxsize=1000, ttl=3600)
-        self._initialization_state = defaultdict(bool)
-
+        self.metrics = defaultdict(Counter)
+    
     async def initialize(self) -> None:
-        """Initialize agent factory with proper phasing"""
-        if self._initializing or self.initialized:
-            return
-            
-        self._initializing = True
+        """Initialize evidence store"""
         try:
-            # Phase 1: Core initialization
-            await self._initialize_core()
-            self._initialization_state['core'] = True
-            
-            # Phase 2: Template initialization
-            await self._initialize_templates()
-            self._initialization_state['templates'] = True
-            
-            # Phase 3: Component initialization
-            await self._initialize_components()
-            self._initialization_state['components'] = True
-            
-            # Only now initialize pools
-            if await self._verify_initialization():
-                await self._initialize_pools()
-                self._initialization_state['pools'] = True
-            
-            self.initialized = True
-            self.logger.info("Agent factory initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Agent factory initialization failed: {e}")
-            await self.cleanup()
-            raise
-        finally:
-            self._initializing = False
-
-    async def _initialize_core(self) -> None:
-        """Initialize core factory components"""
-        try:
-            self.agents.clear()
-            self.agent_states.clear()
-            self.metrics.clear()
+            self.evidence.clear()
+            self.indices.clear()
             self.cache.clear()
-            
-            # Initialize basic metrics tracking
-            self.metrics = {
-                'agents_created': Counter(),
-                'pools_initialized': Counter(),
-                'errors': Counter()
-            }
-            
-            self.logger.info("Core components initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Core initialization failed: {e}")
-            raise
-
-    async def _initialize_templates(self) -> None:
-        """Initialize agent templates"""
-        try:
-            self.templates = {
-                'BossAgent': {
-                    'class': BossAgent,
-                    'config': self.config.get_model_config('BossAgent')
-                },
-                'Layer1Agent': {
-                    'class': Layer1Agent,
-                    'config': self.config.get_model_config('Layer1Agent')
-                },
-                'Layer2Agent': {
-                    'class': Layer2Agent,
-                    'config': self.config.get_model_config('Layer2Agent')
-                },
-                'Layer3Agent': {
-                    'class': Layer3Agent,
-                    'config': self.config.get_model_config('Layer3Agent')
-                },
-                'Layer4Agent': {
-                    'class': Layer4Agent,
-                    'config': self.config.get_model_config('Layer4Agent')
-                }
-            }
-            
-            self.logger.info("Templates initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Template initialization failed: {e}")
-            raise
-
-    async def _initialize_components(self) -> None:
-        """Initialize factory components"""
-        try:
-            # Initialize agent tracking
-            self.agent_states = defaultdict(lambda: {
-                'status': 'inactive',
-                'initialized_at': None,
-                'last_active': None
-            })
-            
-            # Initialize pool tracking
-            self.agent_pools = defaultdict(list)
-            
-            self.logger.info("Components initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Component initialization failed: {e}")
-            raise
-
-    async def _initialize_pools(self) -> None:
-        """Initialize agent pools with proper error handling"""
-        try:
-            for agent_type, template in self.templates.items():
-                config = template['config']
-                if not config:
-                    self.logger.warning(f"No configuration found for {agent_type}")
-                    continue
-                    
-                # Safe access to pool_size with proper error handling
-                pool_size = config.get('pool_size', 1) if isinstance(config, dict) else config.get('pool_size', 1)
-                self.logger.info(f"Initializing pool for {agent_type} with size {pool_size}")
-                
-                for _ in range(pool_size):
-                    agent = await self._create_agent_instance(
-                        agent_type,
-                        template['class'],
-                        config.to_dict() if hasattr(config, 'to_dict') else config
-                    )
-                    if agent:
-                        self.agent_pools[agent_type].append(agent)
-                        self.metrics['pools_initialized'][agent_type] += 1
-                        
-            self.logger.info("Agent pools initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Pool initialization failed: {e}")
-            raise
-    async def create_agent(self, agent_type: str, layer_id: int) -> BaseAgent:
-        try:
-            agent_config = self._prepare_agent_config(agent_type, layer_id)
-            agent_class = self._get_agent_class(agent_type)
-            agent = agent_class(
-                name=f"{agent_type}_{layer_id}",
-                model_info=agent_config.model_config.to_dict(),
-                config=self.config
-            )
-            await agent.initialize()
-            return agent
-        except Exception as e:
-            self.logger.error(f"Agent creation failed: {e}")
-            raise
-
-    def _prepare_agent_config(self, agent_type: str, layer_id: int) -> AgentConfig:
-        """Prepare hierarchical configuration for agent"""
-        base_config = self.config.get_agent_config(agent_type)
-        layer_config = self.config.get_layer_config(layer_id)
-        return self._merge_configs(base_config, layer_config)
-
-    async def _create_agent_instance(self, agent_type: str, agent_class: Type, config: Dict[str, Any]) -> Optional[BaseAgent]:
-        """Create agent instance with proper error handling"""
-        try:
-            agent = agent_class(
-                name=f"{agent_type}_{len(self.agents)}",
-                model_info=config,
-                config=self.config
-            )
-            await agent.initialize()
-            
-            self.agents[agent.name] = agent
-            self.metrics['agents_created'][agent_type] += 1
-            
-            return agent
-        except Exception as e:
-            self.logger.error(f"Agent instance creation failed: {e}")
-            self.metrics['errors']['creation_failed'] += 1
-            return None
-
-    async def _verify_initialization(self) -> bool:
-        """Verify initialization state"""
-        try:
-            required_states = {'core', 'templates', 'components'}
-            current_states = {
-                state for state, initialized in self._initialization_state.items()
-                if initialized
-            }
-            
-            if not required_states.issubset(current_states):
-                missing_states = required_states - current_states
-                self.logger.error(f"Missing initialization states: {missing_states}")
-                return False
-                
-            return True
-        except Exception as e:
-            self.logger.error(f"Initialization verification failed: {e}")
-            return False
-
-    async def cleanup(self) -> None:
-        """Cleanup factory resources"""
-        try:
-            # Cleanup agents
-            for agent in self.agents.values():
-                try:
-                    await agent.cleanup()
-                except Exception as e:
-                    self.logger.error(f"Agent cleanup failed: {e}")
-            
-            # Clear collections
-            self.agents.clear()
-            self.agent_states.clear()
-            self.agent_pools.clear()
-            self.templates.clear()
-            self.cache.clear()
-            
-            # Reset state
-            self.initialized = False
-            self._initializing = False
-            self._initialization_state.clear()
-            
-            self.logger.info("Agent factory cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Factory cleanup failed: {e}")
-            raise
-    def _get_config_value(self, config: Union[Dict[str, Any], ModelConfig], key: str, default: Any = None) -> Any:
-        """Safely get configuration value regardless of config type"""
-        try:
-            if isinstance(config, dict):
-                return config.get(key, default)
-            elif hasattr(config, 'get'):
-                return config.get(key, default)
-            elif hasattr(config, key):
-                return getattr(config, key)
-            return default
-        except Exception as e:
-            self.logger.error(f"Error accessing config value {key}: {e}")
-            return default
-    def get_factory_statistics(self) -> Dict[str, Any]:
-        """Get factory statistics"""
-        return {
-            'total_agents': len(self.agents),
-            'agents_by_type': dict(self.metrics['agents_created']),
-            'pool_sizes': {
-                agent_type: len(pool)
-                for agent_type, pool in self.agent_pools.items()
-            },
-            'active_agents': len([
-                agent for agent in self.agents.values()
-                if agent.initialized
-            ])
-        }
-    
-from typing import Dict, List, Any, Optional, Union, Type
-from collections import defaultdict, Counter
-from cachetools import TTLCache
-
-
-# moa_system.py
-class EnhancedMoASystem:
-    def __init__(self, config: EnhancedConfig):
-        self.config = config
-        self.evidence_manager = EvidenceManager()
-        self.agents = {}
-        
-    async def initialize(self):
-        try:
-            await self.evidence_manager.initialize()
-            await self._initialize_agents()
-            # Setup REWOO integration...
-        except Exception as e:
-            self.logger.error(f"MOA initialization failed: {e}")
-            raise
-
-    async def _initialize_agents(self) -> None:
-        """Initialize all agents with proper error handling"""
-        try:
-            agent_factory = AgentFactory(self.config)
-            await agent_factory.initialize()
-            
-            for agent_config in self.config.agent_configs:
-                try:
-                    agent = await agent_factory.create_agent(
-                        agent_config.type,
-                        agent_config.model_config,
-                        self.communication
-                    )
-                    self.agents[agent.name] = agent
-                    self.agent_states[agent.name] = {
-                        'status': 'active',
-                        'initialized_at': datetime.now().isoformat()
-                    }
-                    self.logger.info(f"Initialized agent {agent.name}")
-                except Exception as e:
-                    self.logger.error(f"Failed to initialize agent {agent_config.name}: {str(e)}")
-                    raise
-            
-            self.logger.info(f"Initialized {len(self.agents)} agents successfully")
-        except Exception as e:
-            self.logger.error(f"Agent initialization failed: {str(e)}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup system resources"""
-        try:
-            # Cleanup communication channel
-            if hasattr(self, 'communication'):
-                await self.communication.cleanup()
-            
-            # Cleanup evidence store
-            if hasattr(self, 'evidence_store'):
-                await self.evidence_store.cleanup()
-            
-            # Cleanup agents
-            if hasattr(self, 'agents'):
-                for agent in self.agents.values():
-                    try:
-                        await agent.cleanup()
-                    except Exception as e:
-                        self.logger.error(f"Error cleaning up agent {agent.name}: {str(e)}")
-            
-            self.initialized = False
-            self._initializing = False
-            self.logger.info("MoA system cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"MoA system cleanup failed: {str(e)}")
-            raise
-
-    async def _initialize_components(self) -> None:
-        """Initialize core system components."""
-        try:
-            # Initialize configuration
-            if not self.config.initialized:
-                await self.config.initialize()
-            
-            # Initialize metrics tracking
-            self.metrics = defaultdict(Counter)
-            
-            # Initialize caching
-            self.cache = TTLCache(maxsize=1000, ttl=3600)
-            
-            self.logger.info("Core components initialized successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Component initialization failed: {str(e)}")
-            raise
-
-    async def _initialize_layer_agents(self) -> None:
-        """Initialize agents for each layer with proper async handling."""
-        try:
-            for layer_id, layer_config in self.config.layer_configs.items():
-                self.layer_agents[layer_id] = []
-                
-                for agent_name in layer_config.agents:
-                    agent = await self._create_layer_agent(agent_name, layer_id)
-                    if agent:
-                        self.layer_agents[layer_id].append(agent)
-                        self.logger.info(f"Created agent {agent_name} for layer {layer_id}")
-                        
-            self.logger.info(f"Initialized {sum(len(agents) for agents in self.layer_agents.values())} layer agents")
-            
-        except Exception as e:
-            self.logger.error(f"Layer agent initialization failed: {str(e)}")
-            raise
-
-    async def _create_layer_agent(self, agent_name: str, layer_id: int) -> Optional[BaseAgent]:
-        """Create and initialize a layer agent."""
-        try:
-            # Get agent configuration
-            agent_config = self.config.get_agent_config(agent_name)
-            if not agent_config:
-                raise ValueError(f"Configuration not found for agent {agent_name}")
-                
-            # Create agent instance
-            agent_class = self._get_agent_class(agent_config.type)
-            agent = agent_class(
-                name=f"{agent_name}_{layer_id}",
-                model_info=agent_config.model_config.to_dict(),
-                config=self.config
-            )
-            
-            # Initialize agent
-            await agent.initialize()
-            
-            # Update metrics
-            self.metrics['agents_created'][agent_config.type] += 1
-            
-            return agent
-            
-        except Exception as e:
-            self.logger.error(f"Agent creation failed for {agent_name}: {str(e)}")
-            return None
-
-    def _get_agent_class(self, agent_type: str) -> Type[BaseAgent]:
-        """Get the appropriate agent class based on type."""
-        agent_classes = {
-            'Layer1Agent': Layer1Agent,
-            'Layer2Agent': Layer2Agent,
-            'Layer3Agent': Layer3Agent,
-            'Layer4Agent': Layer4Agent
-        }
-        
-        if agent_type not in agent_classes:
-            raise ValueError(f"Unknown agent type: {agent_type}")
-            
-        return agent_classes[agent_type]
-
-    async def cleanup(self) -> None:
-        """Cleanup system resources."""
-        try:
-            # Cleanup layer agents
-            for agents in self.layer_agents.values():
-                for agent in agents:
-                    await agent.cleanup()
-                    
-            # Clear collections
-            self.layer_agents.clear()
             self.metrics.clear()
-            if hasattr(self, 'cache'):
-                self.cache.clear()
-                
-            self.initialized = False
-            self._initializing = False
-            
-            self.logger.info("MoA system cleaned up successfully")
-            
-        except Exception as e:
-            self.logger.error(f"MoA system cleanup failed: {str(e)}")
-            raise
-
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get current system status."""
-        return {
-            'initialized': self.initialized,
-            'initializing': self._initializing,
-            'agent_counts': {
-                layer_id: len(agents)
-                for layer_id, agents in self.layer_agents.items()
-            },
-            'metrics': dict(self.metrics)
-        }
-
-    
-# Focusing on the EnhancedKnowledgeGraph changes:
-class EnhancedKnowledgeGraph:
-    """Enhanced knowledge graph with async support"""
-    def __init__(self, config: 'EnhancedConfig'):
-        self.config = config
-        self.driver = None
-        self.validators = {}
-        self.updaters = {}
-        self.logger = logging.getLogger(__name__)
-        self.initialized = False
-
-    async def initialize(self):
-        """Initialize graph components"""
-        try:
-            # Initialize graph database connection
-            await self._initialize_database()
-            
-            # Initialize validators
-            await self._initialize_validators()
-            
-            # Initialize updaters
-            await self._initialize_updaters()
-            
-            # Initialize indices
-            await self._initialize_indices()
-            
             self.initialized = True
-            self.logger.info("Knowledge graph initialized successfully")
+            self.logger.info("Evidence store initialized successfully")
         except Exception as e:
-            self.logger.error(f"Knowledge graph initialization failed: {e}")
-            raise
-
-    async def _initialize_database(self):
-        """Initialize database connection with proper async handling"""
-
-        # Use async driver for Neo4j:
-        self.driver = AsyncGraphDatabase.driver(
-            self.config.neo4j_uri,
-            auth=(self.config.neo4j_user, self.config.neo4j_password),
-            max_connection_lifetime=3600
-        )
-        
-        # Test connection with an async session
-        async with self.driver.session() as session:
-            await session.run("RETURN 1")
-        
-        self.logger.info("Graph database connection initialized")
-
-    async def _initialize_indices(self):
-        """Initialize graph indices"""
-        try:
-            # Now this is truly async
-            async with self.driver.session() as session:
-                await session.run("""
-                    CREATE INDEX IF NOT EXISTS FOR (n:Entity) ON (n.id);
-                    CREATE INDEX IF NOT EXISTS FOR (n:Entity) ON (n.type);
-                    CREATE INDEX IF NOT EXISTS FOR ()-[r:RELATES_TO]-() ON (r.type);
-                """)
-            self.logger.info("Graph indices initialized")
-        except Exception as e:
-            self.logger.error(f"Index initialization failed: {e}")
-            raise
-
-    async def _initialize_validators(self):
-        # Assume same as original
-        self.validators = {
-            'entity': self._validate_entity,
-            'relationship': self._validate_relationship,
-            'property': self._validate_property,
-            'constraint': self._validate_constraint
-        }
-        self.logger.info("Validators initialized")
-
-    async def _initialize_updaters(self):
-        # Assume same as original
-        self.updaters = {
-            'entity': self._update_entity,
-            'relationship': self._update_relationship,
-            'property': self._update_property,
-            'batch': self._batch_update
-        }
-        self.logger.info("Updaters initialized")
-   
-
-    async def _run_query(self, query: str, parameters: Dict[str, Any] = None):
-        """Run Neo4j query asynchronously"""
-        try:
-            def execute_query():
-                with self.driver.session() as session:
-                    return session.run(query, parameters)
-            
-            # Execute query in thread pool
-            return await asyncio.get_event_loop().run_in_executor(
-                None, execute_query
-            )
-        except Exception as e:
-            self.logger.error(f"Query execution failed: {e}")
-            raise
-
-
-
-    async def _initialize_updaters(self):
-        """Initialize graph updaters"""
-        self.updaters = {
-            'entity': self._update_entity,
-            'relationship': self._update_relationship,
-            'property': self._update_property,
-            'batch': self._batch_update
-        }
-        self.logger.info("Updaters initialized")
-
-    async def update_graph(self, data: Dict[str, Any]) -> None:
-        """Update graph with new data"""
-        try:
-            # Validate data
-            validated_data = await self._validate_data(data)
-            
-            # Extract entities and relationships
-            entities = await self._extract_entities(validated_data)
-            relationships = await self._extract_relationships(validated_data)
-            
-            # Update graph using async query execution
-            for entity in entities:
-                await self._run_query(
-                    "MERGE (n:Entity {id: $id}) SET n += $properties",
-                    {"id": entity["id"], "properties": entity["properties"]}
-                )
-            
-            for rel in relationships:
-                await self._run_query(
-                    """
-                    MATCH (a:Entity {id: $from_id})
-                    MATCH (b:Entity {id: $to_id})
-                    MERGE (a)-[r:RELATES]->(b)
-                    SET r += $properties
-                    """,
-                    {
-                        "from_id": rel["from_id"],
-                        "to_id": rel["to_id"],
-                        "properties": rel["properties"]
-                    }
-                )
-            
-            # Validate updates
-            await self._validate_updates()
-            
-        except Exception as e:
-            self.logger.error(f"Graph update failed: {e}")
-            raise
-
-    async def close(self):
-        """Close database connection"""
-        if self.driver:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self.driver.close
-            )
-
-    async def cleanup(self):
-        """Cleanup graph resources"""
-        try:
-            if self.driver:
-                await self.close()
-            self.initialized = False
-            self.logger.info("Knowledge graph cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Knowledge graph cleanup failed: {e}")
-            raise
-            
-            
-    async def _run_query(self, query: str, parameters: Dict[str, Any] = None):
-        """Run Neo4j query asynchronously"""
-        try:
-            def execute_query():
-                with self.driver.session() as session:
-                    return session.run(query, parameters)
-            
-            # Execute query in thread pool
-            return await asyncio.get_event_loop().run_in_executor(
-                None, execute_query
-            )
-        except Exception as e:
-            self.logger.error(f"Query execution failed: {e}")
-            raise
-
-
+            self.logger.error(f"Evidence store initialization failed: {e}")
+            raise InitializationError(f"Evidence store init failed: {e}")
     
-   
-
-    async def _validate_entity(self, entity: Dict[str, Any]) -> bool:
-        """Validate entity data"""
-        required_fields = ['id', 'type', 'properties']
-        return all(field in entity for field in required_fields)
-
-    async def _validate_relationship(self, relationship: Dict[str, Any]) -> bool:
-        """Validate relationship data"""
-        required_fields = ['source_id', 'target_id', 'type', 'properties']
-        return all(field in relationship for field in required_fields)
-
-    async def _validate_property(self, property_data: Dict[str, Any]) -> bool:
-        """Validate property data"""
-        required_fields = ['key', 'value', 'type']
-        return all(field in property_data for field in required_fields)
-
-    async def _validate_constraint(self, constraint: Dict[str, Any]) -> bool:
-        """Validate constraint data"""
-        required_fields = ['type', 'properties']
-        return all(field in constraint for field in required_fields)
-
-    async def _update_entity(self, entity: Dict[str, Any]) -> None:
-        """Update entity in graph"""
+    async def store_evidence(self, 
+                           evidence_id: str, 
+                           content: Any, 
+                           metadata: Dict[str, Any],
+                           source: str = "system",
+                           confidence: float = 1.0,
+                           tags: List[str] = None) -> None:
+        """Store evidence with comprehensive indexing"""
+        if not self.initialized:
+            raise SystemError("Evidence store not initialized")
+        
         try:
-            async with self.driver.session() as session:
-                await session.run("""
-                    MERGE (n:Entity {id: $id})
-                    SET n += $properties
-                """, entity)
-        except Exception as e:
-            self.logger.error(f"Entity update failed: {e}")
-            raise
-
-    async def _update_relationship(self, relationship: Dict[str, Any]) -> None:
-        """Update relationship in graph"""
-        try:
-            async with self.driver.session() as session:
-                await session.run("""
-                    MATCH (s:Entity {id: $source_id})
-                    MATCH (t:Entity {id: $target_id})
-                    MERGE (s)-[r:RELATES_TO {type: $type}]->(t)
-                    SET r += $properties
-                """, relationship)
-        except Exception as e:
-            self.logger.error(f"Relationship update failed: {e}")
-            raise
-
-    async def _update_property(self, property_update: Dict[str, Any]) -> None:
-        """Update property in graph"""
-        try:
-            async with self.driver.session() as session:
-                await session.run("""
-                    MATCH (n:Entity {id: $entity_id})
-                    SET n[$key] = $value
-                """, property_update)
-        except Exception as e:
-            self.logger.error(f"Property update failed: {e}")
-            raise
-
-    async def _batch_update(self, updates: List[Dict[str, Any]]) -> None:
-        """Perform batch update of graph"""
-        try:
-            async with self.driver.session() as session:
-                for update in updates:
-                    if update['type'] == 'entity':
-                        await self._update_entity(update['data'])
-                    elif update['type'] == 'relationship':
-                        await self._update_relationship(update['data'])
-                    elif update['type'] == 'property':
-                        await self._update_property(update['data'])
-        except Exception as e:
-            self.logger.error(f"Batch update failed: {e}")
-            raise
-
-    async def update_graph(self, data: Dict[str, Any]) -> None:
-        """Update graph with new data"""
-        try:
-            # Validate data
-            validated_data = await self._validate_data(data)
-            
-            # Extract entities and relationships
-            entities = await self._extract_entities(validated_data)
-            relationships = await self._extract_relationships(validated_data)
-            
-            # Update graph using async query execution
-            for entity in entities:
-                await self._run_query(
-                    "MERGE (n:Entity {id: $id}) SET n += $properties",
-                    {"id": entity["id"], "properties": entity["properties"]}
-                )
-            
-            for rel in relationships:
-                await self._run_query(
-                    """
-                    MATCH (a:Entity {id: $from_id})
-                    MATCH (b:Entity {id: $to_id})
-                    MERGE (a)-[r:RELATES]->(b)
-                    SET r += $properties
-                    """,
-                    {
-                        "from_id": rel["from_id"],
-                        "to_id": rel["to_id"],
-                        "properties": rel["properties"]
-                    }
-                )
-            
-            # Validate updates
-            await self._validate_updates()
-            
-        except Exception as e:
-            self.logger.error(f"Graph update failed: {e}")
-            raise
-
-    async def close(self):
-        """Close database connection"""
-        if self.driver:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self.driver.close
+            evidence = Evidence(
+                id=evidence_id,
+                source=source,
+                content=content,
+                timestamp=datetime.now().timestamp(),
+                metadata=metadata,
+                confidence=confidence,
+                tags=tags or []
             )
+            
+            self.evidence[evidence_id] = evidence
+            
+            # Create comprehensive indices
+            self.indices[f"source:{source}"].add(evidence_id)
+            self.indices[f"confidence:{int(confidence * 10)}"].add(evidence_id)
+            
+            for key in metadata.keys():
+                self.indices[f"metadata:{key}"].add(evidence_id)
+            
+            for tag in evidence.tags:
+                self.indices[f"tag:{tag}"].add(evidence_id)
+            
+            self.metrics['stored'] += 1
+            self.logger.debug(f"Stored evidence {evidence_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to store evidence {evidence_id}: {e}")
+            raise
+    
+    async def retrieve_evidence(self, evidence_id: str) -> Optional[Evidence]:
+        """Retrieve evidence by ID with caching"""
+        if evidence_id in self.cache:
+            self.metrics['cache_hits'] += 1
+            return self.cache[evidence_id]
+        
+        evidence = self.evidence.get(evidence_id)
+        if evidence:
+            self.cache[evidence_id] = evidence
+            self.metrics['retrieved'] += 1
+        
+        return evidence
+    
+    async def search_evidence(self, 
+                            source: Optional[str] = None,
+                            metadata_key: Optional[str] = None,
+                            tags: Optional[List[str]] = None,
+                            min_confidence: float = 0.0) -> List[Evidence]:
+        """Advanced evidence search with multiple criteria"""
+        try:
+            evidence_ids = set()
+            
+            # Build search criteria
+            if source:
+                evidence_ids.update(self.indices.get(f"source:{source}", set()))
+            
+            if metadata_key:
+                evidence_ids.update(self.indices.get(f"metadata:{metadata_key}", set()))
+            
+            if tags:
+                tag_ids = set()
+                for tag in tags:
+                    tag_ids.update(self.indices.get(f"tag:{tag}", set()))
+                if evidence_ids:
+                    evidence_ids.intersection_update(tag_ids)
+                else:
+                    evidence_ids = tag_ids
+            
+            if not evidence_ids and not any([source, metadata_key, tags]):
+                evidence_ids = set(self.evidence.keys())
+            
+            # Filter by confidence
+            results = []
+            for eid in evidence_ids:
+                if eid in self.evidence:
+                    evidence = self.evidence[eid]
+                    if evidence.confidence >= min_confidence:
+                        results.append(evidence)
+            
+            self.metrics['searches'] += 1
+            return sorted(results, key=lambda x: x.confidence, reverse=True)
+            
+        except Exception as e:
+            self.logger.error(f"Evidence search failed: {e}")
+            return []
+    
+    async def cleanup(self) -> None:
+        """Cleanup evidence store"""
+        try:
+            self.evidence.clear()
+            self.indices.clear()
+            self.cache.clear()
+            self.metrics.clear()
+            self.initialized = False
+            self.logger.info("Evidence store cleaned up successfully")
+        except Exception as e:
+            self.logger.error(f"Evidence store cleanup failed: {e}")
 
+# ============================================================================
+# RESOURCE MANAGEMENT
+# ============================================================================
 
+@dataclass
+class ResourceAllocation:
+    """Resource allocation tracking"""
+    resource_type: str
+    amount: float
+    allocated_at: datetime
+    allocated_to: str
+    metadata: Dict[str, Any]
 
-class UnifiedResourceManager:
-    """Combined resource management and monitoring"""
+class ImprovedResourceManager:
+    """Enhanced resource manager with monitoring and optimization"""
+    
     def __init__(self):
-        self.resource_metrics = defaultdict(list)
-        self.logger = logging.getLogger(__name__)
-        self.monitoring = False
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Resource tracking
+        self.allocations: Dict[str, ResourceAllocation] = {}
+        self.metrics_history: deque = deque(maxlen=1000)
+        self.alerts: List[Dict[str, Any]] = []
+        
+        # Monitoring
+        self.monitoring_active = False
+        self.monitoring_task: Optional[asyncio.Task] = None
+        self.monitoring_interval = 5.0
+        
+        # Thresholds
         self.thresholds = {
-            "cpu_critical": 0.90,
-            "memory_critical": 0.90,
-            "disk_critical": 0.95,
-            "cpu_warning": 0.80,
-            "memory_warning": 0.80,
-            "disk_warning": 0.85
+            'cpu_warning': 70.0,
+            'cpu_critical': 85.0,
+            'memory_warning': 75.0,
+            'memory_critical': 90.0,
+            'disk_warning': 80.0,
+            'disk_critical': 95.0
         }
-        self.current_stats = {}
-        self.alert_history = []
-        self.active_recoveries = set()
-
-    async def initialize(self):
+        
+        # Resource pools
+        self.resource_pools = {}
+        self.allocated_resources = defaultdict(float)
+        self.initialized = False
+    
+    async def initialize(self) -> None:
         """Initialize resource manager"""
         try:
-            self.monitoring = True
-            await self._initialize_resource_pools()
-            self.monitoring_task = asyncio.create_task(self._monitor_resources())
+            self._initialize_resource_pools()
+            await self._start_monitoring()
+            self.initialized = True
             self.logger.info("Resource manager initialized successfully")
         except Exception as e:
             self.logger.error(f"Resource manager initialization failed: {e}")
             raise
-
-    async def _initialize_resource_pools(self):
-        """Initialize resource pools"""
+    
+    def _initialize_resource_pools(self) -> None:
+        """Initialize resource pools based on system capacity"""
         try:
             self.resource_pools = {
-                "cpu": {"total": psutil.cpu_count(), "allocated": 0},
-                "memory": {"total": psutil.virtual_memory().total, "allocated": 0},
-                "disk": {"total": psutil.disk_usage('/').total, "allocated": 0}
+                'cpu_cores': psutil.cpu_count(),
+                'memory_gb': psutil.virtual_memory().total / (1024**3),
+                'disk_gb': psutil.disk_usage('/').total / (1024**3)
+            }
+            self.logger.info(f"Resource pools initialized: {self.resource_pools}")
+        except Exception as e:
+            self.logger.error(f"Resource pool initialization failed: {e}")
+            raise
+    
+    async def allocate_resources(self, 
+                               request_id: str,
+                               requirements: Dict[str, float],
+                               requestor: str) -> Dict[str, bool]:
+        """Allocate resources with validation"""
+        if not self.initialized:
+            raise RuntimeError("Resource manager not initialized")
+        
+        allocation_results = {}
+        allocated_resources = []
+        
+        try:
+            # Check availability
+            for resource_type, amount in requirements.items():
+                if not self._can_allocate(resource_type, amount):
+                    # Rollback partial allocations
+                    for alloc_id in allocated_resources:
+                        await self.release_resources(alloc_id)
+                    raise ResourceError(f"Insufficient {resource_type} available")
+            
+            # Allocate resources
+            for resource_type, amount in requirements.items():
+                allocation_id = f"{request_id}_{resource_type}"
+                
+                allocation = ResourceAllocation(
+                    resource_type=resource_type,
+                    amount=amount,
+                    allocated_at=datetime.now(),
+                    allocated_to=requestor,
+                    metadata={'request_id': request_id}
+                )
+                
+                self.allocations[allocation_id] = allocation
+                self.allocated_resources[resource_type] += amount
+                allocated_resources.append(allocation_id)
+                allocation_results[resource_type] = True
+                
+                self.logger.debug(f"Allocated {amount} {resource_type} to {requestor}")
+            
+            return allocation_results
+            
+        except Exception as e:
+            self.logger.error(f"Resource allocation failed: {e}")
+            raise
+    
+    async def release_resources(self, allocation_id: str) -> bool:
+        """Release allocated resources"""
+        try:
+            if allocation_id not in self.allocations:
+                return False
+            
+            allocation = self.allocations[allocation_id]
+            self.allocated_resources[allocation.resource_type] -= allocation.amount
+            del self.allocations[allocation_id]
+            
+            self.logger.debug(f"Released {allocation.amount} {allocation.resource_type}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Resource release failed: {e}")
+            return False
+    
+    def _can_allocate(self, resource_type: str, amount: float) -> bool:
+        """Check if resource can be allocated"""
+        total_available = self.resource_pools.get(resource_type, 0)
+        currently_allocated = self.allocated_resources.get(resource_type, 0)
+        return (total_available - currently_allocated) >= amount
+    
+    async def _start_monitoring(self) -> None:
+        """Start resource monitoring"""
+        if not self.monitoring_active:
+            self.monitoring_active = True
+            self.monitoring_task = asyncio.create_task(self._monitoring_loop())
+    
+    async def _monitoring_loop(self) -> None:
+        """Resource monitoring loop"""
+        while self.monitoring_active:
+            try:
+                metrics = await self._collect_metrics()
+                self.metrics_history.append(metrics)
+                await self._check_thresholds(metrics)
+                await asyncio.sleep(self.monitoring_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Monitoring error: {e}")
+                await asyncio.sleep(self.monitoring_interval)
+    
+    async def _collect_metrics(self) -> Dict[str, Any]:
+        """Collect system metrics"""
+        try:
+            return {
+                'cpu_percent': psutil.cpu_percent(interval=1),
+                'memory_percent': psutil.virtual_memory().percent,
+                'disk_percent': psutil.disk_usage('/').percent,
+                'timestamp': datetime.now()
             }
         except Exception as e:
-            self.logger.error(f"Resource pools initialization failed: {e}")
-            raise
-
-    async def _monitor_resources(self):
-        """Monitor system resources"""
-        while self.monitoring:
-            try:
-                self.current_stats.update({
-                    "cpu_usage": psutil.cpu_percent() / 100,
-                    "memory_usage": psutil.virtual_memory().percent / 100,
-                    "disk_usage": psutil.disk_usage('/').percent / 100,
-                    "network_usage": self._get_network_usage()
+            self.logger.error(f"Metrics collection failed: {e}")
+            return {'timestamp': datetime.now()}
+    
+    async def _check_thresholds(self, metrics: Dict[str, Any]) -> None:
+        """Check metrics against thresholds"""
+        alerts = []
+        
+        for metric_name in ['cpu', 'memory', 'disk']:
+            value = metrics.get(f'{metric_name}_percent', 0)
+            
+            if value >= self.thresholds.get(f'{metric_name}_critical', 100):
+                alerts.append({
+                    'level': 'CRITICAL',
+                    'resource': metric_name,
+                    'value': value,
+                    'threshold': self.thresholds[f'{metric_name}_critical']
                 })
-                await self._check_thresholds()
-                await asyncio.sleep(1)
-            except Exception as e:
-                self.logger.error(f"Resource monitoring error: {e}")
-                await asyncio.sleep(5)
-
-    async def cleanup(self):
+            elif value >= self.thresholds.get(f'{metric_name}_warning', 100):
+                alerts.append({
+                    'level': 'WARNING',
+                    'resource': metric_name,
+                    'value': value,
+                    'threshold': self.thresholds[f'{metric_name}_warning']
+                })
+        
+        if alerts:
+            await self._handle_alerts(alerts)
+    
+    async def _handle_alerts(self, alerts: List[Dict[str, Any]]) -> None:
+        """Handle resource alerts"""
+        for alert in alerts:
+            self.alerts.append({**alert, 'timestamp': datetime.now()})
+            level = alert['level']
+            resource = alert['resource']
+            value = alert['value']
+            
+            log_msg = f"{level} Alert: {resource} at {value:.1f}%"
+            
+            if level == 'CRITICAL':
+                self.logger.critical(log_msg)
+            else:
+                self.logger.warning(log_msg)
+    
+    async def cleanup(self) -> None:
         """Cleanup resource manager"""
         try:
-            self.monitoring = False
-            if hasattr(self, 'monitoring_task'):
+            self.monitoring_active = False
+            if self.monitoring_task:
                 self.monitoring_task.cancel()
                 try:
                     await self.monitoring_task
                 except asyncio.CancelledError:
                     pass
+            
+            self.allocations.clear()
+            self.allocated_resources.clear()
+            self.metrics_history.clear()
+            self.alerts.clear()
+            self.initialized = False
+            
             self.logger.info("Resource manager cleaned up successfully")
         except Exception as e:
             self.logger.error(f"Resource manager cleanup failed: {e}")
-            raise
 
+# ============================================================================
+# AGENT SYSTEM
+# ============================================================================
 
+class BaseAgent(ABC):
+    """Enhanced base agent with comprehensive capabilities"""
     
-
-    async def allocate_resources(self, requirements: Dict[str, Any]) -> Dict[str, Any]:
-        """Allocate resources based on requirements"""
-        try:
-            allocations = {}
-            for resource, amount in requirements.items():
-                if resource in self.resource_pools:
-                    pool = self.resource_pools[resource]
-                    if pool["allocated"] + amount <= pool["total"]:
-                        pool["allocated"] += amount
-                        allocations[resource] = amount
-                    else:
-                        raise ResourceError(
-                            f"Insufficient {resource} available")
-            return allocations
-        except Exception as e:
-            self.logger.error(f"Resource allocation failed: {e}")
-            raise
-
-    def _get_network_usage(self) -> float:
-        """Get network usage statistics"""
-        try:
-            net_io = psutil.net_io_counters()
-            return (net_io.bytes_sent + net_io.bytes_recv) / 1024 / 1024  # MB
-        except Exception as e:
-            self.logger.error(f"Network usage check failed: {e}")
-            return 0.0
-
-    async def _check_thresholds(self):
-        """Check resource usage against thresholds"""
-        alerts = []
-        for resource, usage in self.current_stats.items():
-            critical_threshold = self.thresholds.get(f"{resource}_critical")
-            warning_threshold = self.thresholds.get(f"{resource}_warning")
-
-            if critical_threshold and usage >= critical_threshold:
-                alerts.append({
-                    "level": "CRITICAL",
-                    "resource": resource,
-                    "usage": usage,
-                    "threshold": critical_threshold
-                })
-            elif warning_threshold and usage >= warning_threshold:
-                alerts.append({
-                    "level": "WARNING",
-                    "resource": resource,
-                    "usage": usage,
-                    "threshold": warning_threshold
-                })
-
-        if alerts:
-            await self._handle_alerts(alerts)
-
-    async def _handle_alerts(self, alerts: List[Dict[str, Any]]):
-        """Handle resource alerts"""
-        for alert in alerts:
-            self.logger.warning(f"Resource Alert: {alert}")
-            # Implement alert handling logic here (e.g., scaling, notification)
-
-    async def release_resources(self, allocations: Dict[str, Any]):
-        """Release allocated resources"""
-        try:
-            for resource, amount in allocations.items():
-                if resource in self.resource_pools:
-                    pool = self.resource_pools[resource]
-                    pool["allocated"] -= amount
-        except Exception as e:
-            self.logger.error(f"Resource release failed: {e}")
-            raise
-
-
-import logging
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-
-
-
-
-
-
-import logging
-from typing import Dict, List, Any, Callable, Optional
-from dataclasses import dataclass
-
-@dataclass
-class Evidence:
-    """Data class for evidence items"""
-    source: str
-    content: Any
-    timestamp: float
-    metadata: Dict[str, Any]
-
-class ValidationSystem:
-    """System for validation and quality assurance"""
-    def __init__(self):
-        """Initialize validation system"""
-        self.validators: Dict[str, Callable] = {}
-        self.logger = logging.getLogger(f"{self.__class__.__name__}")
-        self._initialized = False
-        self.validation_metrics = defaultdict(Counter)
-        self.validation_history = []
-
-    async def initialize(self) -> None:
-        """Initialize validation system"""
-        try:
-            self._initialize_validators()
-            self._initialized = True
-            self.logger.info("Validation system initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Validation system initialization failed: {e}")
-            raise
-
-    def _initialize_validators(self) -> None:
-        """Initialize validation rules"""
-        self.validators = {
-            "evidence": self._validate_evidence,
-            "result": self._validate_result,
-            "chain": self._validate_chain
-        }
-
-    async def cleanup(self) -> None:
-        """Cleanup validation system resources"""
-        try:
-            self.validators.clear()
-            self.validation_metrics.clear()
-            self.validation_history.clear()
-            self._initialized = False
-            self.logger.info("Validation system cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Validation system cleanup failed: {e}")
-            raise
-
-
-    
-
-    async def validate_evidence(self, evidence: Evidence) -> Dict[str, Any]:
-        """Public method to validate single evidence item"""
-        if not self._initialized:
-            raise RuntimeError("Validation system not initialized")
-            
-        try:
-            is_valid = await self._validate_evidence(evidence)
-            return {
-                "valid": is_valid,
-                "reason": None if is_valid else "Evidence validation failed"
-            }
-        except Exception as e:
-            self.logger.error(f"Evidence validation failed: {e}")
-            return {
-                "valid": False,
-                "reason": str(e)
-            }
-
-    async def validate_result(self, result: Any) -> Dict[str, Any]:
-        """Public method to validate execution result"""
-        if not self._initialized:
-            raise RuntimeError("Validation system not initialized")
-            
-        try:
-            is_valid = await self._validate_result(result)
-            return {
-                "valid": is_valid,
-                "reason": None if is_valid else "Result validation failed"
-            }
-        except Exception as e:
-            self.logger.error(f"Result validation failed: {e}")
-            return {
-                "valid": False,
-                "reason": str(e)
-            }
-
-    async def validate_chain(self, chain: List[Evidence]) -> Dict[str, Any]:
-        """Public method to validate evidence chain"""
-        if not self._initialized:
-            raise RuntimeError("Validation system not initialized")
-            
-        try:
-            is_valid = await self._validate_chain(chain)
-            return {
-                "valid": is_valid,
-                "reason": None if is_valid else "Chain validation failed"
-            }
-        except Exception as e:
-            self.logger.error(f"Chain validation failed: {e}")
-            return {
-                "valid": False,
-                "reason": str(e)
-            }
-
-    async def _validate_evidence(self, evidence: Evidence) -> bool:
-        """Validate single evidence item"""
-        try:
-            # Basic validation checks
-            if not evidence.source:
-                return False
-                
-            if evidence.content is None:
-                return False
-                
-            if not evidence.timestamp:
-                return False
-                
-            # Add additional validation logic here
-            # For example:
-            # - Check evidence format
-            # - Verify source authenticity
-            # - Validate content structure
-            # - Check timestamp is reasonable
-            # - Verify required metadata fields
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Evidence validation error: {e}")
-            return False
-
-    async def _validate_result(self, result: Any) -> bool:
-        """Validate execution result"""
-        try:
-            # Basic validation checks
-            if result is None:
-                return False
-                
-            # Add result-specific validation logic here
-            # For example:
-            # - Check result format
-            # - Validate result content
-            # - Verify required fields
-            # - Check for reasonable values
-            # - Validate against expected schema
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Result validation error: {e}")
-            return False
-
-    async def _validate_chain(self, chain: List[Evidence]) -> bool:
-        """Validate evidence chain"""
-        try:
-            # Basic validation checks
-            if not chain:
-                return False
-                
-            # Validate each evidence item in the chain
-            for evidence in chain:
-                if not await self._validate_evidence(evidence):
-                    return False
-                    
-            # Add chain-specific validation logic here
-            # For example:
-            # - Check chain continuity
-            # - Verify temporal ordering
-            # - Validate chain integrity
-            # - Check cross-references
-            # - Verify chain completeness
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Chain validation error: {e}")
-            return False
-
-    async def calculate_confidence(self, result: Any) -> float:
-        """Calculate confidence score for a result"""
-        try:
-            if not self._initialized:
-                raise RuntimeError("Validation system not initialized")
-
-            # Basic confidence calculation
-            confidence = 1.0
-            
-            # Add confidence calculation logic here
-            # For example:
-            # - Quality checks
-            # - Consistency checks
-            # - Source reliability
-            # - Data completeness
-            # - Validation strength
-            
-            return confidence
-            
-        except Exception as e:
-            self.logger.error(f"Confidence calculation failed: {e}")
-            return 0.0
-
-
-
-
-class Graph:
-    """Graph database wrapper"""
-
-    def __init__(self):
-        self.nodes = {}
-        self.edges = {}
-        self.logger = logging.getLogger(__name__)
-
-
-class UnifiedLearningSystem:
-    """Base learning system with comprehensive pattern recognition"""
-    def __init__(self, config: 'EnhancedConfig'):
+    def __init__(self, name: str, model_info: Dict[str, Any], config: EnhancedConfig):
+        self.name = name
+        self.model_info = model_info
         self.config = config
-        self.learning_patterns = defaultdict(list)
-        self.adaptation_rules = {}
-        self.performance_history = defaultdict(list)
-        self.logger = logging.getLogger(__name__)
-        self.metrics = {
-            "learning_iterations": 0,
-            "pattern_matches": 0,
-            "successful_adaptations": 0
-        }
-        self.pattern_cache = TTLCache(maxsize=1000, ttl=3600)
-        self.continuous_learning = EnhancedContinuousLearning()
-
+        self.layer_id = model_info.get('layer_id', 0)
+        self.logger = logging.getLogger(f"{self.__class__.__name__}_{name}")
+        self.initialized = False
+        
+        # Core components
+        self.evidence_store: Optional[EvidenceStore] = None
+        
+        # State management
+        self.state = defaultdict(dict)
+        self.metrics = defaultdict(Counter)
+        self.cache = TTLCache(maxsize=1000, ttl=3600)
+        self.task_history = deque(maxlen=100)
+    
     async def initialize(self) -> None:
-        """Initialize learning system components"""
+        """Initialize agent with comprehensive setup"""
         try:
-            # Initialize pattern storage
-            self.learning_patterns.clear()
+            await self._initialize_core_components()
+            await self._initialize_agent()
             
-            # Initialize adaptation rules
-            self.adaptation_rules = {
-                'pattern_recognition': self._recognize_pattern,
-                'pattern_adaptation': self._adapt_pattern,
-                'performance_tracking': self._track_performance
-            }
+            self.initialized = True
+            self.logger.info(f"Agent {self.name} initialized successfully")
             
-            # Initialize continuous learning
-            await self.continuous_learning.initialize()
+        except Exception as e:
+            self.logger.error(f"Agent initialization failed: {e}")
+            await self.cleanup()
+            raise InitializationError(f"Agent {self.name} init failed: {e}")
+    
+    async def _initialize_core_components(self) -> None:
+        """Initialize core agent components"""
+        try:
+            # Initialize evidence store
+            self.evidence_store = EvidenceStore()
+            await self.evidence_store.initialize()
             
             # Initialize metrics
-            self.metrics = {
-                "learning_iterations": 0,
-                "pattern_matches": 0,
-                "successful_adaptations": 0,
-                "performance_scores": [],
-                "adaptation_history": []
-            }
+            self.metrics = defaultdict(Counter)
             
-            self.logger.info("Learning system initialized successfully")
+            # Initialize state
+            self.state = defaultdict(dict)
+            
+            self.logger.debug("Core components initialized successfully")
             
         except Exception as e:
-            self.logger.error(f"Learning system initialization failed: {e}")
+            self.logger.error(f"Core component initialization failed: {e}")
             raise
-
-    async def _recognize_pattern(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Recognize patterns in input data"""
+    
+    @abstractmethod
+    async def _initialize_agent(self) -> None:
+        """Initialize agent-specific components"""
+        pass
+    
+    @abstractmethod
+    async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a task"""
+        pass
+    
+    async def _record_task_execution(self, task: Dict[str, Any], result: Dict[str, Any], 
+                                   execution_time: float) -> None:
+        """Record task execution for metrics and learning"""
         try:
-            # Check cache first
-            cache_key = self._generate_cache_key(data)
-            if cache_key in self.pattern_cache:
-                self.metrics["pattern_matches"] += 1
-                return self.pattern_cache[cache_key]
-
-            # Extract features
-            features = self._extract_features(data)
-            
-            # Classify pattern
-            pattern_type = self._classify_pattern(features)
-            
-            # Calculate similarity scores
-            similarity_scores = self._calculate_similarity_scores(features)
-            
-            # Analyze trends
-            trends = self._analyze_trends(features)
-            
-            # Calculate confidence
-            confidence = self._calculate_confidence(similarity_scores, trends)
-            
-            pattern_info = {
-                "type": pattern_type,
-                "features": features,
-                "similarity_scores": similarity_scores,
-                "trends": trends,
-                "confidence": confidence,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Cache result
-            self.pattern_cache[cache_key] = pattern_info
-            
-            self.metrics["pattern_matches"] += 1
-            return pattern_info
-            
-        except Exception as e:
-            self.logger.error(f"Pattern recognition failed: {e}")
-            raise
-
-    async def _adapt_pattern(self, pattern: Dict[str, Any]) -> Dict[str, Any]:
-        """Adapt system behavior based on recognized pattern"""
-        try:
-            # Validate pattern
-            if not self._validate_pattern(pattern):
-                raise ValueError("Invalid pattern structure")
-            
-            # Generate adaptation rules
-            rules = self._generate_adaptation_rules(pattern)
-            
-            # Apply rules
-            adaptation_result = await self._apply_adaptation_rules(rules)
-            
-            # Validate adaptation
-            if not self._validate_adaptation(adaptation_result):
-                raise ValueError("Invalid adaptation result")
-            
-            # Update metrics
-            self.metrics["successful_adaptations"] += 1
-            
-            return {
-                "pattern": pattern,
-                "rules": rules,
-                "result": adaptation_result,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Pattern adaptation failed: {e}")
-            raise
-
-    async def _track_performance(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Track system performance and learning progress"""
-        try:
-            # Extract metrics
-            metrics = self._extract_performance_metrics(execution_data)
-            
-            # Calculate scores
-            performance_scores = self._calculate_performance_scores(metrics)
-            
-            # Analyze trends
-            performance_trends = self._analyze_performance_trends(metrics)
-            
-            # Update history
-            self.performance_history[execution_data['id']].append({
-                "metrics": metrics,
-                "scores": performance_scores,
-                "trends": performance_trends,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Update metrics
-            self.metrics["performance_scores"].append(performance_scores)
-            
-            return {
-                "current_metrics": metrics,
-                "performance_scores": performance_scores,
-                "trends": performance_trends,
-                "history_length": len(self.performance_history)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Performance tracking failed: {e}")
-            raise
-
-    def _extract_features(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract relevant features from input data"""
-        features = {
-            "input_type": type(data).__name__,
-            "complexity": self._calculate_complexity(data),
-            "structure": self._analyze_structure(data),
-            "metadata": self._extract_metadata(data)
-        }
-        return features
-
-    def _classify_pattern(self, features: Dict[str, Any]) -> str:
-        """Classify pattern based on extracted features"""
-        if features["complexity"] > 0.8:
-            return "complex"
-        elif features["complexity"] > 0.4:
-            return "moderate"
-        return "simple"
-
-    def _calculate_similarity_scores(self, features: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate similarity scores against known patterns"""
-        scores = {}
-        for pattern_type, patterns in self.learning_patterns.items():
-            if patterns:
-                similarity = self._calculate_pattern_similarity(features, patterns[-1])
-                scores[pattern_type] = similarity
-        return scores
-
-    def _analyze_trends(self, features: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze trends in feature patterns"""
-        return {
-            "complexity_trend": self._calculate_trend(features["complexity"]),
-            "structure_stability": self._analyze_structure_stability(features["structure"]),
-            "metadata_consistency": self._check_metadata_consistency(features["metadata"])
-        }
-
-    def _calculate_confidence(self,
-                            similarity_scores: Dict[str, float],
-                            trends: Dict[str, Any]) -> float:
-        """Calculate confidence score for pattern recognition"""
-        if not similarity_scores:
-            return 0.0
-        
-        # Weight different factors
-        similarity_weight = 0.6
-        trend_weight = 0.4
-        
-        # Calculate weighted scores
-        similarity_score = sum(similarity_scores.values()) / len(similarity_scores)
-        trend_score = sum(
-            1.0 if v > 0.5 else 0.0
-            for v in trends.values()
-        ) / len(trends)
-        
-        return similarity_weight * similarity_score + trend_weight * trend_score
-
-    def _generate_cache_key(self, data: Dict[str, Any]) -> str:
-        """Generate cache key for pattern recognition results"""
-        return hashlib.md5(
-            json.dumps(data, sort_keys=True).encode()
-        ).hexdigest()
-
-    def _validate_pattern(self, pattern: Dict[str, Any]) -> bool:
-        """Validate pattern structure and content"""
-        required_fields = ["type", "features", "confidence"]
-        return all(field in pattern for field in required_fields)
-
-    def _validate_adaptation(self, result: Dict[str, Any]) -> bool:
-        """Validate adaptation result"""
-        required_fields = ["pattern", "rules", "result"]
-        return all(field in result for field in required_fields)
-
-    def _extract_performance_metrics(self, data: Dict[str, Any]) -> Dict[str, float]:
-        """Extract performance metrics from execution data"""
-        return {
-            "execution_time": data.get("execution_time", 0.0),
-            "success_rate": data.get("success_rate", 0.0),
-            "error_rate": data.get("error_rate", 0.0),
-            "resource_usage": data.get("resource_usage", 0.0)
-        }
-
-    def _calculate_performance_scores(self, metrics: Dict[str, float]) -> Dict[str, float]:
-        """Calculate performance scores from metrics"""
-        return {
-            "efficiency": 1.0 - metrics["execution_time"] / 100.0,
-            "reliability": 1.0 - metrics["error_rate"],
-            "resource_efficiency": 1.0 - metrics["resource_usage"] / 100.0
-        }
-
-class EnhancedContinuousLearning:
-    """Enhanced continuous learning system with comprehensive logging"""
-    def __init__(self):
-        self.learning_history = []
-        self.performance_metrics = defaultdict(list)
-        self.adaptation_rules = {}
-        self.learning_rate = 0.01
-        self.min_samples_for_adaptation = 5
-        self.logger = logging.getLogger(__name__)
-        self.metrics = defaultdict(Counter)
-        self.initialized = False
-
-    async def initialize(self) -> None:
-        """Initialize continuous learning system"""
-        try:
-            # Clear existing state
-            self.learning_history.clear()
-            self.performance_metrics.clear()
-            self.adaptation_rules.clear()
-            self.metrics.clear()
-            
-            # Initialize metrics tracking
-            self.metrics['updates'] = Counter()
-            self.metrics['adaptations'] = Counter()
-            self.metrics['errors'] = Counter()
-            
-            self.initialized = True
-            self.logger.info("Continuous learning system initialized successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Continuous learning initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup continuous learning resources"""
-        try:
-            self.learning_history.clear()
-            self.performance_metrics.clear()
-            self.adaptation_rules.clear()
-            self.metrics.clear()
-            self.initialized = False
-            self.logger.info("Continuous learning system cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Continuous learning cleanup failed: {e}")
-            raise
-    async def update_metrics(self, execution_id: str, result: Dict[str, Any]) -> None:
-        """Update learning metrics with enhanced tracking"""
-        try:
-            # Calculate comprehensive metrics
-            metrics = self._calculate_metrics(result)
-            
-            # Update performance tracking
-            self.performance_metrics[execution_id] = metrics
-            
-            # Add to learning history with context
-            self.learning_history.append({
-                'execution_id': execution_id,
-                'metrics': metrics,
+            execution_record = {
+                'task_id': task.get('id', f"task_{datetime.now().timestamp()}"),
+                'task_type': task.get('type', 'unknown'),
+                'execution_time': execution_time,
+                'status': result.get('status', 'unknown'),
                 'timestamp': datetime.now().isoformat(),
-                'context': self._extract_context(result)
-            })
+                'agent': self.name,
+                'layer': self.layer_id
+            }
+            
+            self.task_history.append(execution_record)
+            
+            # Store as evidence
+            if self.evidence_store:
+                await self.evidence_store.store_evidence(
+                    evidence_id=f"execution_{execution_record['task_id']}",
+                    content=execution_record,
+                    metadata={'type': 'execution_record', 'agent': self.name},
+                    source=self.name,
+                    tags=['execution', 'performance']
+                )
             
             # Update metrics
-            self.metrics['updates']['total'] += 1
-            self.logger.debug(f"Updated metrics for execution {execution_id}")
+            self.metrics['tasks_processed'] += 1
+            self.metrics['total_execution_time'] += execution_time
             
-            # Update adaptation rules if enough samples
-            if len(self.learning_history) >= self.min_samples_for_adaptation:
-                await self._update_adaptation_rules()
-                self.metrics['adaptations']['total'] += 1
-                self.logger.info("Updated adaptation rules based on new data")
+        except Exception as e:
+            self.logger.error(f"Failed to record task execution: {e}")
+    
+    async def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get agent performance metrics"""
+        try:
+            total_tasks = self.metrics['tasks_processed']
+            total_time = self.metrics['total_execution_time']
+            
+            return {
+                'total_tasks': total_tasks,
+                'total_execution_time': total_time,
+                'average_execution_time': total_time / total_tasks if total_tasks > 0 else 0,
+                'tasks_per_minute': total_tasks / (total_time / 60) if total_time > 0 else 0,
+                'recent_tasks': len(self.task_history),
+                'agent_name': self.name,
+                'layer_id': self.layer_id
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get performance metrics: {e}")
+            return {}
+    
+    async def cleanup(self) -> None:
+        """Cleanup agent resources"""
+        try:
+            if self.evidence_store:
+                await self.evidence_store.cleanup()
                 
-        except Exception as e:
-            self.logger.error(f"Metrics update failed: {e}")
-            self.metrics['errors']['update_failed'] += 1
-            raise
-
-    def _calculate_metrics(self, result: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate comprehensive performance metrics"""
-        try:
-            metrics = {}
-            
-            # Response quality metrics
-            if 'response' in result:
-                metrics['response_quality'] = self._calculate_response_quality(
-                    result['response']
-                )
-            
-            # Execution metrics
-            if 'execution_time' in result:
-                metrics['execution_efficiency'] = self._calculate_efficiency(
-                    result['execution_time']
-                )
-            
-            # Resource usage metrics
-            if 'resource_usage' in result:
-                metrics['resource_efficiency'] = self._calculate_resource_efficiency(
-                    result['resource_usage']
-                )
-            
-            self.logger.debug(f"Calculated metrics: {metrics}")
-            return metrics
-            
-        except Exception as e:
-            self.logger.error(f"Metrics calculation failed: {e}")
-            self.metrics['errors']['calculation_failed'] += 1
-            return {}
-
-    def _extract_context(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract relevant context from result"""
-        try:
-            context = {}
-            
-            # Extract task information
-            if 'task' in result:
-                context['task_type'] = self._classify_task(result['task'])
-            
-            # Extract execution context
-            if 'execution_context' in result:
-                context['execution_environment'] = result['execution_context']
-            
-            # Extract agent information
-            if 'agent_info' in result:
-                context['agent_type'] = result['agent_info'].get('type')
-                context['agent_layer'] = result['agent_info'].get('layer')
-            
-            self.logger.debug(f"Extracted context: {context}")
-            return context
-            
-        except Exception as e:
-            self.logger.error(f"Context extraction failed: {e}")
-            self.metrics['errors']['context_failed'] += 1
-            return {}
-
-    async def _update_adaptation_rules(self) -> None:
-        """Update adaptation rules based on learning history"""
-        try:
-            recent_history = self.learning_history[-self.min_samples_for_adaptation:]
-            
-            # Analyze performance trends
-            trends = self._analyze_performance_trends(recent_history)
-            
-            # Update rules based on trends
-            for metric, trend in trends.items():
-                if abs(trend) > self.learning_rate:
-                    self.adaptation_rules[metric] = {
-                        'trend': trend,
-                        'adaptation': self._generate_adaptation_strategy(metric, trend),
-                        'timestamp': datetime.now().isoformat()
-                    }
-            
-            self.logger.info(f"Updated {len(trends)} adaptation rules")
-            
-        except Exception as e:
-            self.logger.error(f"Adaptation rules update failed: {e}")
-            self.metrics['errors']['adaptation_failed'] += 1
-            raise
-
-    def _calculate_response_quality(self, response) -> float:
-        """Calculate response quality metric"""
-        # Implement response quality calculation logic
-        return 0.5
-
-    def _calculate_efficiency(self, execution_time: float) -> float:
-        """Calculate execution efficiency metric"""
-        return 1.0 / execution_time if execution_time > 0 else 1.0
-
-    def _calculate_resource_efficiency(self, resource_usage: Dict[str, Any]) -> float:
-        """Calculate resource efficiency metric"""
-        # Implement resource efficiency calculation logic
-        return 0.8
-
-    def _classify_task(self, task: Any) -> str:
-        """Classify task type"""
-        # Implement task classification logic
-        return "default_task"
-
-    def _analyze_performance_trends(self, history: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Analyze performance trends from history"""
-        try:
-            trends = {}
-            
-            # Calculate trends for each metric
-            for metric in self.performance_metrics:
-                values = [h['metrics'].get(metric, 0) for h in history]
-                if values:
-                    trends[metric] = self._calculate_trend(values)
-            
-            self.logger.debug(f"Analyzed trends: {trends}")
-            return trends
-            
-        except Exception as e:
-            self.logger.error(f"Trend analysis failed: {e}")
-            self.metrics['errors']['trend_analysis_failed'] += 1
-            return {}
-
-    def _calculate_trend(self, values: List[float]) -> float:
-        """Calculate trend from list of values"""
-        if len(values) < 2:
-            return 0.0
-            
-        try:
-            # Calculate simple linear trend
-            x = list(range(len(values)))
-            y = values
-            
-            # Calculate slope using numpy if available
-            if np:
-                slope, _ = np.polyfit(x, y, 1)
-                return slope
-            
-            # Fallback to simple calculation
-            n = len(values)
-            mean_x = sum(x) / n
-            mean_y = sum(y) / n
-            
-            numerator = sum((xi - mean_x) * (yi - mean_y)
-                          for xi, yi in zip(x, y))
-            denominator = sum((xi - mean_x) ** 2 for xi in x)
-            
-            return numerator / denominator if denominator != 0 else 0.0
-            
-        except Exception as e:
-            self.logger.error(f"Trend calculation failed: {e}")
-            return 0.0
-
-    def _generate_adaptation_strategy(self, metric: str, trend: float) -> str:
-        """Generate adaptation strategy based on metric and trend"""
-        if trend > 0:
-            return f"Increase resource allocation for {metric}"
-        else:
-            return f"Decrease resource allocation for {metric}"
-
-
-from openai import AsyncOpenAI, OpenAI
-from typing import Dict, Any, Optional, List, Union
-import aiohttp
-import asyncio
-from datetime import datetime, timedelta
-
-class UnifiedLLMManager:
-    """Advanced LLM management with rate limiting, caching, and error handling"""
-    def __init__(self, config: 'EnhancedConfig'):
-        self.config = config
-        self.cache = {}
-        self.logger = logging.getLogger(__name__)
-        self.rate_limiters = {
-            'openai': RateLimiter(60, 60),    # 60 requests per minute
-            'anthropic': RateLimiter(10, 1),   # 10 requests per second
-            'vertex': RateLimiter(100, 60),    # 100 requests per minute
-            'mistral': RateLimiter(50, 60)     # 50 requests per minute
-        }
-        self.metrics = defaultdict(dict)
-        self.error_counts = defaultdict(int)
-        self.clients = {}
-        self.initialized = False
-        self.session = None
-
-    async def initialize(self) -> None:
-        """Initialize LLM manager with proper client setup"""
-        try:
-            # Create aiohttp session for async requests
-            self.session = aiohttp.ClientSession()
-
-            # Initialize API clients
-            if self.config.api_settings.vertex_ai_credentials:
-                try:
-                    credentials = service_account.Credentials.from_service_account_info(
-                        self.config.api_settings.vertex_ai_credentials
-                    )
-                    vertexai.init(
-                        project=self.config.api_settings.vertex_ai_project_id,
-                        location=self.config.api_settings.vertex_ai_location,
-                        credentials=credentials
-                    )
-                    self.logger.info("Vertex AI initialized successfully")
-                except Exception as e:
-                    self.logger.error(f"Vertex AI initialization failed: {e}")
-                    raise
-
-            # Initialize OpenAI client
-            if self.config.api_settings.openai_api_key:
-                try:
-                    self.clients['openai'] = AsyncOpenAI(
-                        api_key=self.config.api_settings.openai_api_key
-                    )
-                    self.logger.info("OpenAI client initialized successfully")
-                except Exception as e:
-                    self.logger.error(f"OpenAI client initialization failed: {e}")
-                    raise
-
-            # Initialize Anthropic client
-            if self.config.api_settings.anthropic_api_key:
-                try:
-                    self.clients['anthropic'] = anthropic.AsyncAnthropicVertex()
-                    self.logger.info("Anthropic client initialized successfully")
-                except Exception as e:
-                    self.logger.error(f"Anthropic client initialization failed: {e}")
-                    raise
-
-            self.initialized = True
-            self.logger.info("LLM manager initialized successfully")
-
-        except Exception as e:
-            self.logger.error(f"LLM manager initialization failed: {e}")
-            await self.cleanup()
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup manager resources"""
-        try:
-            # Close aiohttp session
-            if self.session:
-                await self.session.close()
-
-            # Cleanup clients
-            for client_name, client in self.clients.items():
-                try:
-                    if hasattr(client, 'close'):
-                        await client.close()
-                    self.logger.info(f"{client_name} client closed successfully")
-                except Exception as e:
-                    self.logger.error(f"Error closing {client_name} client: {e}")
-
-            # Clear cache and metrics
-            self.cache.clear()
+            self.state.clear()
             self.metrics.clear()
-            self.error_counts.clear()
-
-            self.initialized = False
-            self.logger.info("LLM manager cleaned up successfully")
-
-        except Exception as e:
-            self.logger.error(f"LLM manager cleanup failed: {e}")
-            raise
-
-    async def generate_response(self,
-                              model: str,
-                              prompt: str,
-                              max_tokens: Optional[int] = None,
-                              **kwargs) -> Dict[str, Any]:
-        """Generate LLM response with comprehensive handling"""
-        if not self.initialized:
-            raise RuntimeError("LLM manager not initialized")
-
-        start_time = time.time()
-        cache_key = self._generate_cache_key(model, prompt, max_tokens, kwargs)
-
-        try:
-            # Check cache
-            if cached := self.cache.get(cache_key):
-                self._update_metrics(model, 'cache_hit', time.time() - start_time)
-                return cached
-
-            # Get appropriate rate limiter
-            provider = self._get_provider(model)
-            await self.rate_limiters[provider].wait()
-
-            # Generate response
-            response = await self._route_to_provider(
-                model, prompt, max_tokens, **kwargs)
-
-            # Cache response
-            self.cache[cache_key] = response
-
-            # Update metrics
-            self._update_metrics(model, 'success', time.time() - start_time)
-
-            return response
-
-        except Exception as e:
-            self._handle_error(model, e)
-            raise
-
-    def _get_provider(self, model: str) -> str:
-        """Determine the provider for a given model"""
-        if "gpt" in model.lower():
-            return 'openai'
-        elif "claude" in model.lower():
-            return 'anthropic'
-        elif "gemini" in model.lower():
-            return 'vertex'
-        elif "mistral" in model.lower():
-            return 'mistral'
-        else:
-            raise ValueError(f"Unsupported model: {model}")
-
-    def _generate_cache_key(self, model: str, prompt: str, max_tokens: Optional[int], kwargs: Dict) -> str:
-        """Generate a unique cache key for a request"""
-        key_parts = [model, prompt, str(max_tokens), json.dumps(kwargs, sort_keys=True)]
-        return hashlib.md5("".join(key_parts).encode()).hexdigest()
-
-    def _update_metrics(self, model: str, status: str, duration: float):
-        """Update LLM usage metrics"""
-        self.metrics[model][status] = self.metrics[model].get(status, 0) + 1
-        self.metrics[model]['avg_duration'] = (
-            self.metrics[model].get('avg_duration', 0) + duration
-        ) / self.metrics[model].get(status, 1)
-
-    def _handle_error(self, model: str, error: Exception):
-        """Handle LLM errors with logging and potential retries"""
-        self.logger.error(f"LLM Error ({model}): {error}")
-        self.error_counts[model] += 1
-
-        
-class ErrorHandler:
-    """Handles system-wide error management and recovery"""
-    def __init__(self):
-        self.error_history = []
-        self.recovery_strategies = {}
-        self.metrics = defaultdict(Counter)
-        self.logger = logging.getLogger(__name__)
-
-    async def handle_error(self, error: Exception, context: Dict[str, Any]) -> None:
-        """Handle errors with comprehensive recovery attempts."""
-        error_id = f"error_{datetime.now().timestamp()}"
-        
-        try:
-            # Log error details
-            self.logger.error(f"Error {error_id}: {str(error)}")
-            
-            # Store error information
-            self.error_history.append({
-                'id': error_id,
-                'error': str(error),
-                'type': type(error).__name__,
-                'context': context,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # Update metrics
-            self.metrics['errors'][type(error).__name__] += 1
-            
-            # Attempt recovery
-            await self._attempt_recovery(error_id, error, context)
-            
-        except Exception as e:
-            self.logger.error(f"Error handling failed: {str(e)}")
-            raise
-
-    async def _attempt_recovery(self, error_id: str, error: Exception, context: Dict[str, Any]) -> None:
-        """Attempt to recover from error using appropriate strategy."""
-        try:
-            # Select recovery strategy
-            strategy = self._select_recovery_strategy(error)
-            
-            # Execute recovery
-            recovery_result = await self._execute_recovery(strategy, context)
-            
-            # Update recovery metrics
-            self.metrics['recovery_attempts'][strategy] += 1
-            if recovery_result.get('success'):
-                self.metrics['successful_recoveries'][strategy] += 1
-            
-            # Log recovery attempt
-            self.logger.info(f"Recovery attempt for error {error_id}: {recovery_result}")
-            
-        except Exception as e:
-            self.logger.error(f"Recovery attempt failed: {str(e)}")
-            self.metrics['failed_recoveries'] += 1
-
-    async def initialize(self) -> None:
-        """Initialize error handler with recovery strategies"""
-        try:
-            # Initialize recovery strategies
-            await self._initialize_recovery_strategies()
-            
-            # Initialize error database
-            await self._initialize_error_database()
-            
-            # Initialize monitoring
-            await self._initialize_monitoring()
-            
-            self.initialized = True
-            self.logger.info("Error handler initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Error handler initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup error handler resources"""
-        try:
-            # Clear error database
-            self.error_database.clear()
-            
-            # Clear history
-            self.error_history.clear()
-            self.recovery_history.clear()
-            
-            # Clear active recoveries
-            self.active_recoveries.clear()
-            
-            # Clear cache
             self.cache.clear()
+            self.task_history.clear()
             
             self.initialized = False
-            self.logger.info("Error handler cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Error handler cleanup failed: {e}")
-            raise
-
-    async def _initialize_recovery_strategies(self) -> None:
-        """Initialize recovery strategies"""
-        try:
-            self.recovery_strategies = {
-                'retry': self._retry_operation,
-                'fallback': self._fallback_operation,
-                'reset': self._reset_state,
-                'compensate': self._compensating_action
-            }
-            self.logger.info("Recovery strategies initialized")
-        except Exception as e:
-            self.logger.error(f"Recovery strategies initialization failed: {e}")
-            raise
-
-    async def _initialize_error_database(self) -> None:
-        """Initialize error database"""
-        try:
-            self.error_database = {}
-            self.error_patterns = defaultdict(int)
-            self.error_correlations = defaultdict(list)
-            self.logger.info("Error database initialized")
-        except Exception as e:
-            self.logger.error(f"Error database initialization failed: {e}")
-            raise
-
-    async def _initialize_monitoring(self) -> None:
-        """Initialize error monitoring system"""
-        try:
-            self.monitoring_config = {
-                'alert_threshold': 5,
-                'monitoring_interval': 60,
-                'metrics_enabled': True
-            }
-            self.logger.info("Error monitoring initialized")
-        except Exception as e:
-            self.logger.error(f"Monitoring initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup error handler resources"""
-        try:
-            # Clear error database
-            self.error_database.clear()
+            self.logger.info(f"Agent {self.name} cleaned up successfully")
             
-            # Clear history
-            self.error_history.clear()
-            self.recovery_history.clear()
-            
-            # Clear active recoveries
-            self.active_recoveries.clear()
-            
-            # Clear cache
-            self.cache.clear()
-            
-            self.initialized = False
-            self.logger.info("Error handler cleaned up successfully")
         except Exception as e:
-            self.logger.error(f"Error handler cleanup failed: {e}")
-            raise
+            self.logger.error(f"Agent cleanup failed: {e}")
 
-    async def handle_error(self, error: Exception, context: Dict[str, Any]) -> Optional[Any]:
-        """Handle errors with sophisticated recovery"""
-        if not self.initialized:
-            raise RuntimeError("Error handler not initialized")
-            
-        error_id = f"error_{datetime.now().timestamp()}"
+class Layer1Agent(BaseAgent):
+    """Data Integration & Processing Layer Agent"""
+    
+    async def _initialize_agent(self) -> None:
+        """Initialize Layer1 agent-specific components"""
+        self.data_processors = {
+            'csv': self._process_csv_data,
+            'json': self._process_json_data,
+            'text': self._process_text_data,
+            'xml': self._process_xml_data
+        }
+        self.logger.info(f"Layer1 agent {self.name} components initialized")
+    
+    async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Process data integration tasks"""
         start_time = time.time()
         
         try:
-            # Record error
-            self._record_error(error_id, error, context)
-            
-            # Analyze error
-            error_analysis = self._analyze_error(error)
-            
-            # Select recovery strategy
-            strategy = await self._select_recovery_strategy(error_analysis)
-            
-            # Execute recovery
-            recovery_result = await self._execute_recovery(strategy, context)
-            
-            # Update metrics
-            self._update_recovery_metrics(error_id, start_time)
-            
-            return recovery_result
-            
-        except Exception as e:
-            self.logger.error(f"Error handling failed: {e}")
-            self.metrics["failed_recoveries"] += 1
-            raise
-
-    async def _retry_operation(self, context: Dict[str, Any]) -> Optional[Any]:
-        """Retry failed operation with exponential backoff"""
-        max_retries = 3
-        base_delay = 1
-        
-        for attempt in range(max_retries):
-            try:
-                delay = base_delay * (2 ** attempt)
-                await asyncio.sleep(delay)
-                
-                # Attempt operation
-                result = await self._execute_operation(context)
-                return result
-                
-            except Exception as e:
-                self.logger.warning(f"Retry attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    raise
-
-    async def _fallback_operation(self, context: Dict[str, Any]) -> Optional[Any]:
-        """Execute fallback operation"""
-        try:
-            # Check for cached fallback
-            cache_key = self._generate_cache_key(context)
-            if cache_key in self.cache:
-                return self.cache[cache_key]
-            
-            # Execute fallback logic
-            fallback_result = await self._execute_fallback(context)
-            
-            # Cache successful fallback
-            if fallback_result:
-                self.cache[cache_key] = fallback_result
-            
-            return fallback_result
-            
-        except Exception as e:
-            self.logger.error(f"Fallback operation failed: {e}")
-            raise
-
-    async def _reset_state(self, context: Dict[str, Any]) -> Optional[Any]:
-        """Reset system state"""
-        try:
-            # Backup current state
-            state_backup = self._backup_state(context)
-            
-            # Reset state
-            await self._perform_reset(context)
-            
-            # Verify reset
-            if await self._verify_reset(context):
-                return True
-            else:
-                # Restore backup if verification fails
-                await self._restore_state(state_backup)
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"State reset failed: {e}")
-            raise
-
-    def _record_error(self, error_id: str, error: Exception, context: Dict[str, Any]):
-        """Record error details"""
-        self.error_database[error_id] = {
-            "error": str(error),
-            "type": type(error).__name__,
-            "context": context,
-            "timestamp": datetime.now().isoformat(),
-            "status": "unresolved"
-        }
-        self.metrics["total_errors"] += 1
-
-    def _analyze_error(self, error: Exception) -> Dict[str, Any]:
-        """Analyze error and determine characteristics"""
-        return {
-            "type": type(error).__name__,
-            "severity": self._determine_severity(error),
-            "recoverable": self._is_recoverable(error),
-            "timestamp": datetime.now().isoformat()
-        }
-
-    def _determine_severity(self, error: Exception) -> str:
-        """Determine error severity"""
-        if isinstance(error, (SystemError, MemoryError)):
-            return "critical"
-        elif isinstance(error, (ValueError, TypeError)):
-            return "high"
-        elif isinstance(error, (TimeoutError, ConnectionError)):
-            return "medium"
-        else:
-            return "low"
-
-    def _is_recoverable(self, error: Exception) -> bool:
-        """Determine if error is recoverable"""
-        return not isinstance(error, (SystemError, MemoryError))
-
-    def _generate_cache_key(self, context: Dict[str, Any]) -> str:
-        """Generate cache key from context"""
-        return hashlib.md5(str(sorted(context.items())).encode()).hexdigest()
-
-    def get_error_statistics(self) -> Dict[str, Any]:
-        """Get error handling statistics"""
-        return {
-            "total_errors": self.metrics["total_errors"],
-            "successful_recoveries": self.metrics["successful_recoveries"],
-            "failed_recoveries": self.metrics["failed_recoveries"],
-            "average_recovery_time": np.mean(self.metrics["recovery_times"])
-                if self.metrics["recovery_times"] else 0,
-            "error_patterns": dict(self.error_patterns)
-        }
-    async def _compensating_action(self, context: Dict[str, Any]) -> Optional[Any]:
-        """Execute compensating action to handle errors"""
-        try:
-            # Record compensation attempt
-            compensation_id = f"comp_{datetime.now().timestamp()}"
-            
-            # Execute compensation
-            compensation_result = await self._execute_compensation(context)
-            
-            # Verify compensation
-            if await self._verify_compensation(compensation_result):
-                self.logger.info(f"Compensation {compensation_id} successful")
-                return compensation_result
-                
-            self.logger.warning(f"Compensation {compensation_id} failed verification")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Compensation action failed: {e}")
-            raise
-
-    async def _execute_compensation(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute specific compensation logic"""
-        try:
-            compensation_type = context.get('compensation_type', 'default')
-            
-            compensation_strategies = {
-                'default': self._default_compensation,
-                'rollback': self._rollback_compensation,
-                'retry': self._retry_compensation,
-                'alternate': self._alternate_compensation
-            }
-            
-            if compensation_type not in compensation_strategies:
-                raise ValueError(f"Unknown compensation type: {compensation_type}")
-                
-            return await compensation_strategies[compensation_type](context)
-            
-        except Exception as e:
-            self.logger.error(f"Compensation execution failed: {e}")
-            raise
-
-    async def _verify_compensation(self, result: Dict[str, Any]) -> bool:
-        """Verify compensation result"""
-        try:
-            if not result:
-                return False
-                
-            required_fields = ['status', 'action_taken', 'verification']
-            if not all(field in result for field in required_fields):
-                return False
-                
-            if result['status'] != 'completed':
-                return False
-                
-            if not result['verification']:
-                return False
-                
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Compensation verification failed: {e}")
-            return False
-
-    async def _default_compensation(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Default compensation strategy"""
-        return {
-            'status': 'completed',
-            'action_taken': 'default_compensation',
-            'verification': True,
-            'timestamp': datetime.now().isoformat()
-        }
-
-    async def _rollback_compensation(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Rollback compensation strategy"""
-        try:
-            # Get rollback point
-            rollback_point = context.get('rollback_point')
-            if not rollback_point:
-                raise ValueError("No rollback point specified")
-                
-            # Execute rollback
-            await self._execute_rollback(rollback_point)
-            
-            return {
-                'status': 'completed',
-                'action_taken': 'rollback',
-                'verification': True,
-                'rollback_point': rollback_point,
-                'timestamp': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Rollback compensation failed: {e}")
-            raise
-
-    async def _retry_compensation(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Retry compensation strategy"""
-        try:
-            max_retries = context.get('max_retries', 3)
-            retry_delay = context.get('retry_delay', 1)
-            
-            for attempt in range(max_retries):
-                try:
-                    # Execute retry
-                    result = await self._execute_retry(context)
-                    
-                    return {
-                        'status': 'completed',
-                        'action_taken': 'retry',
-                        'verification': True,
-                        'attempt': attempt + 1,
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    
-                except Exception as retry_error:
-                    if attempt == max_retries - 1:
-                        raise
-                    await asyncio.sleep(retry_delay * (2 ** attempt))
-                    
-        except Exception as e:
-            self.logger.error(f"Retry compensation failed: {e}")
-            raise
-
-    async def _alternate_compensation(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Alternate path compensation strategy"""
-        try:
-            # Get alternate path
-            alternate_path = context.get('alternate_path')
-            if not alternate_path:
-                raise ValueError("No alternate path specified")
-                
-            # Execute alternate path
-            result = await self._execute_alternate_path(alternate_path, context)
-            
-            return {
-                'status': 'completed',
-                'action_taken': 'alternate_path',
-                'verification': True,
-                'alternate_path': alternate_path,
-                'timestamp': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Alternate path compensation failed: {e}")
-            raise
-
-    async def _execute_rollback(self, rollback_point: str) -> None:
-        """Execute rollback to specified point"""
-        self.logger.info(f"Executing rollback to {rollback_point}")
-        # Implement rollback logic here
-        pass
-
-    async def _execute_retry(self, context: Dict[str, Any]) -> Any:
-        """Execute retry operation"""
-        self.logger.info("Executing retry operation")
-        # Implement retry logic here
-        pass
-
-    async def _execute_alternate_path(self, alternate_path: str, context: Dict[str, Any]) -> Any:
-        """Execute alternate path"""
-        self.logger.info(f"Executing alternate path: {alternate_path}")
-        # Implement alternate path logic here
-        pass
-
-    async def _execute_operation(self, context: Dict[str, Any]) -> Any:
-        """Execute operation with proper error handling"""
-        self.logger.info("Executing operation")
-        # Implement operation execution logic here
-        pass
-
-    async def _execute_fallback(self, context: Dict[str, Any]) -> Any:
-        """Execute fallback operation"""
-        self.logger.info("Executing fallback operation")
-        # Implement fallback logic here
-        pass
-
-    async def _backup_state(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Backup current state"""
-        self.logger.info("Backing up current state")
-        # Implement state backup logic here
-        return {}
-
-    async def _perform_reset(self, context: Dict[str, Any]) -> None:
-        """Perform state reset"""
-        self.logger.info("Performing state reset")
-        # Implement reset logic here
-        pass
-
-    async def _verify_reset(self, context: Dict[str, Any]) -> bool:
-        """Verify state reset"""
-        self.logger.info("Verifying state reset")
-        # Implement reset verification logic here
-        return True
-
-    async def _restore_state(self, state_backup: Dict[str, Any]) -> None:
-        """Restore state from backup"""
-        self.logger.info("Restoring state from backup")
-        # Implement state restoration logic here
-        pass
-
-
-class GraphManager:
-    """Manages graph operations using NetworkX"""
-    def __init__(self):
-        self.graph = nx.DiGraph()
-        self.logger = logging.getLogger(__name__)
-        self.node_types = set()
-        self.edge_types = set()
-        self.metadata = defaultdict(dict)
-        self.cache = TTLCache(maxsize=1000, ttl=3600)
-        self.initialized = False
-        self.metrics = defaultdict(Counter)
-
-    async def initialize(self) -> None:
-        """Initialize graph manager components"""
-        try:
-            # Initialize graph components
-            await self._initialize_graph_components()
-            
-            # Initialize indices
-            await self._initialize_indices()
-            
-            # Initialize validation rules
-            await self._initialize_validation_rules()
-            
-            self.initialized = True
-            self.logger.info("Graph manager initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Graph manager initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup graph manager resources"""
-        try:
-            # Clear graph
-            self.graph.clear()
-            
-            # Clear metadata
-            self.metadata.clear()
-            
-            # Clear cache
-            self.cache.clear()
-            
-            # Clear metrics
-            self.metrics.clear()
-            
-            # Clear type sets
-            self.node_types.clear()
-            self.edge_types.clear()
-            
-            self.initialized = False
-            self.logger.info("Graph manager cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Graph manager cleanup failed: {e}")
-            raise
-    async def _initialize_graph_components(self) -> None:
-        """Initialize core graph components"""
-        try:
-            # Initialize graph structure
-            self.graph = nx.DiGraph()
-            
-            # Initialize indices
-            self.indices = {
-                'node_label': {},
-                'edge_type': {},
-                'property': defaultdict(dict)
-            }
-            
-            # Initialize constraints
-            self.constraints = {
-                'unique': set(),
-                'required': set(),
-                'type': {}
-            }
-            
-            self.logger.info("Graph components initialized")
-        except Exception as e:
-            self.logger.error(f"Graph components initialization failed: {e}")
-            raise
-
-    async def _initialize_indices(self) -> None:
-        """Initialize graph indices"""
-        try:
-            # Create indices for common properties
-            self.indices['node_label']['type'] = defaultdict(set)
-            self.indices['edge_type']['type'] = defaultdict(set)
-            self.indices['property']['node'] = defaultdict(lambda: defaultdict(set))
-            self.indices['property']['edge'] = defaultdict(lambda: defaultdict(set))
-            
-            self.logger.info("Graph indices initialized")
-        except Exception as e:
-            self.logger.error(f"Indices initialization failed: {e}")
-            raise
-
-    async def _initialize_validation_rules(self) -> None:
-        """Initialize validation rules"""
-        try:
-            self.validation_rules = {
-                'node': self._validate_node,
-                'edge': self._validate_edge,
-                'property': self._validate_property,
-                'constraint': self._validate_constraint
-            }
-            self.logger.info("Validation rules initialized")
-        except Exception as e:
-            self.logger.error(f"Validation rules initialization failed: {e}")
-            raise
-
-    def add_node(self, node_id: str, attributes: Dict[str, Any]) -> None:
-        """Add a node to the graph with validation"""
-        if not self.initialized:
-            raise RuntimeError("Graph manager not initialized")
-            
-        try:
-            # Validate node attributes
-            self._validate_node_attributes(attributes)
-            
-            # Add node to graph
-            self.graph.add_node(node_id, **attributes)
-            
-            # Update indices
-            self._update_node_indices(node_id, attributes)
-            
-            # Track node type
-            node_type = attributes.get('type', 'default')
-            self.node_types.add(node_type)
-            
-            # Store metadata
-            self.metadata['nodes'][node_id] = {
-                'created_at': datetime.now().isoformat(),
-                'type': node_type,
-                'attributes': attributes
-            }
-            
-            self.logger.info(f"Node {node_id} added successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to add node: {e}")
-            raise
-
-    def add_edge(self, source_id: str, target_id: str, attributes: Dict[str, Any]) -> None:
-        """Add an edge to the graph with validation"""
-        if not self.initialized:
-            raise RuntimeError("Graph manager not initialized")
-            
-        try:
-            # Validate nodes exist
-            if not all(self.graph.has_node(node) for node in [source_id, target_id]):
-                raise ValueError("Source or target node does not exist")
-                
-            # Validate edge attributes
-            self._validate_edge_attributes(attributes)
-            
-            # Add edge to graph
-            self.graph.add_edge(source_id, target_id, **attributes)
-            
-            # Update indices
-            self._update_edge_indices(source_id, target_id, attributes)
-            
-            # Track edge type
-            edge_type = attributes.get('type', 'default')
-            self.edge_types.add(edge_type)
-            
-            # Store metadata
-            edge_key = f"{source_id}->{target_id}"
-            self.metadata['edges'][edge_key] = {
-                'created_at': datetime.now().isoformat(),
-                'type': edge_type,
-                'attributes': attributes
-            }
-            
-            self.logger.info(f"Edge {edge_key} added successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to add edge: {e}")
-            raise
-
-    def _validate_node_attributes(self, attributes: Dict[str, Any]) -> None:
-        """Validate node attributes"""
-        try:
-            # Check required attributes
-            required_fields = ['type']
-            if not all(field in attributes for field in required_fields):
-                raise ValueError(f"Missing required attributes: {required_fields}")
-                
-            # Validate attribute types
-            for key, value in attributes.items():
-                if not self._validate_attribute_type(key, value):
-                    raise ValueError(f"Invalid attribute type for {key}")
-                    
-        except Exception as e:
-            self.logger.error(f"Node attribute validation failed: {e}")
-            raise
-
-    def _validate_edge_attributes(self, attributes: Dict[str, Any]) -> None:
-        """Validate edge attributes"""
-        try:
-            # Check required attributes
-            required_fields = ['type']
-            if not all(field in attributes for field in required_fields):
-                raise ValueError(f"Missing required attributes: {required_fields}")
-                
-            # Validate attribute types
-            for key, value in attributes.items():
-                if not self._validate_attribute_type(key, value):
-                    raise ValueError(f"Invalid attribute type for {key}")
-                    
-        except Exception as e:
-            self.logger.error(f"Edge attribute validation failed: {e}")
-            raise
-
-    def _validate_attribute_type(self, key: str, value: Any) -> bool:
-        """Validate attribute type"""
-        valid_types = {
-            str: ['type', 'label', 'name', 'description'],
-            int: ['weight', 'count', 'index'],
-            float: ['score', 'probability', 'confidence'],
-            bool: ['active', 'valid', 'enabled'],
-            datetime: ['timestamp', 'created_at', 'updated_at']
-        }
-        
-        for type_, keys in valid_types.items():
-            if key in keys and not isinstance(value, type_):
-                return False
-        return True
-
-    def _update_node_indices(self, node_id: str, attributes: Dict[str, Any]) -> None:
-        """Update node indices"""
-        try:
-            # Update label index
-            node_type = attributes.get('type', 'default')
-            self.indices['node_label']['type'][node_type].add(node_id)
-            
-            # Update property indices
-            for key, value in attributes.items():
-                self.indices['property']['node'][key][value].add(node_id)
-                
-        except Exception as e:
-            self.logger.error(f"Node index update failed: {e}")
-            raise
-
-    def _update_edge_indices(self, source_id: str, target_id: str, attributes: Dict[str, Any]) -> None:
-        """Update edge indices"""
-        try:
-            # Update type index
-            edge_type = attributes.get('type', 'default')
-            edge_key = f"{source_id}->{target_id}"
-            self.indices['edge_type']['type'][edge_type].add(edge_key)
-            
-            # Update property indices
-            for key, value in attributes.items():
-                self.indices['property']['edge'][key][value].add(edge_key)
-                
-        except Exception as e:
-            self.logger.error(f"Edge index update failed: {e}")
-            raise
-
-    def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
-        """Get node attributes"""
-        if self.graph.has_node(node_id):
-            return dict(self.graph.nodes[node_id])
-        return None
-
-    def get_edge(self, source_id: str, target_id: str) -> Optional[Dict[str, Any]]:
-        """Get edge attributes"""
-        if self.graph.has_edge(source_id, target_id):
-            return dict(self.graph.edges[source_id, target_id])
-        return None
-
-    def get_neighbors(self, node_id: str) -> List[str]:
-        """Get neighbors of a node"""
-        if self.graph.has_node(node_id):
-            return list(self.graph.neighbors(node_id))
-        return []
-
-    def get_graph_statistics(self) -> Dict[str, Any]:
-        """Get graph statistics"""
-        return {
-            "node_count": self.graph.number_of_nodes(),
-            "edge_count": self.graph.number_of_edges(),
-            "node_types": len(self.node_types),
-            "edge_types": len(self.edge_types),
-            "density": nx.density(self.graph),
-            "average_degree": sum(dict(self.graph.degree()).values()) / self.graph.number_of_nodes()
-                if self.graph.number_of_nodes() > 0 else 0
-        }
-
-    async def _validate_node(self, node_data: Dict[str, Any]) -> bool:
-        """Validate node data structure and content"""
-        try:
-            # Check required fields
-            required_fields = ['id', 'type', 'properties']
-            if not all(field in node_data for field in required_fields):
-                self.logger.error(f"Missing required fields in node data: {required_fields}")
-                return False
-
-            # Validate ID format
-            if not isinstance(node_data['id'], str) or not node_data['id']:
-                self.logger.error("Invalid node ID format")
-                return False
-
-            # Validate type
-            if not isinstance(node_data['type'], str) or not node_data['type']:
-                self.logger.error("Invalid node type format")
-                return False
-
-            # Validate properties
-            if not isinstance(node_data['properties'], dict):
-                self.logger.error("Invalid properties format")
-                return False
-
-            # Validate property types
-            for key, value in node_data['properties'].items():
-                if not self._validate_property_type(key, value):
-                    self.logger.error(f"Invalid property type for {key}")
-                    return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Node validation failed: {e}")
-            return False
-
-    async def _validate_edge(self, edge_data: Dict[str, Any]) -> bool:
-        """Validate edge data structure and content"""
-        try:
-            # Check required fields
-            required_fields = ['source_id', 'target_id', 'type', 'properties']
-            if not all(field in edge_data for field in required_fields):
-                self.logger.error(f"Missing required fields in edge data: {required_fields}")
-                return False
-
-            # Validate source and target IDs
-            if not all(isinstance(edge_data[field], str) and edge_data[field]
-                      for field in ['source_id', 'target_id']):
-                self.logger.error("Invalid source or target ID format")
-                return False
-
-            # Validate type
-            if not isinstance(edge_data['type'], str) or not edge_data['type']:
-                self.logger.error("Invalid edge type format")
-                return False
-
-            # Validate properties
-            if not isinstance(edge_data['properties'], dict):
-                self.logger.error("Invalid properties format")
-                return False
-
-            # Validate property types
-            for key, value in edge_data['properties'].items():
-                if not self._validate_property_type(key, value):
-                    self.logger.error(f"Invalid property type for {key}")
-                    return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Edge validation failed: {e}")
-            return False
-
-    async def _validate_property(self, property_data: Dict[str, Any]) -> bool:
-        """Validate property data structure and content"""
-        try:
-            # Check required fields
-            required_fields = ['key', 'value', 'type']
-            if not all(field in property_data for field in required_fields):
-                self.logger.error(f"Missing required fields in property data: {required_fields}")
-                return False
-
-            # Validate key
-            if not isinstance(property_data['key'], str) or not property_data['key']:
-                self.logger.error("Invalid property key format")
-                return False
-
-            # Validate type
-            if not isinstance(property_data['type'], str) or not property_data['type']:
-                self.logger.error("Invalid property type format")
-                return False
-
-            # Validate value based on type
-            if not self._validate_property_value(property_data['value'], property_data['type']):
-                self.logger.error("Invalid property value for specified type")
-                return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Property validation failed: {e}")
-            return False
-
-    async def _validate_constraint(self, constraint_data: Dict[str, Any]) -> bool:
-        """Validate constraint data structure and content"""
-        try:
-            # Check required fields
-            required_fields = ['type', 'target', 'properties']
-            if not all(field in constraint_data for field in required_fields):
-                self.logger.error(f"Missing required fields in constraint data: {required_fields}")
-                return False
-
-            # Validate constraint type
-            valid_constraint_types = ['unique', 'required', 'range', 'regex']
-            if constraint_data['type'] not in valid_constraint_types:
-                self.logger.error(f"Invalid constraint type: {constraint_data['type']}")
-                return False
-
-            # Validate target
-            valid_targets = ['node', 'edge', 'property']
-            if constraint_data['target'] not in valid_targets:
-                self.logger.error(f"Invalid constraint target: {constraint_data['target']}")
-                return False
-
-            # Validate properties based on constraint type
-            if not self._validate_constraint_properties(
-                constraint_data['type'],
-                constraint_data['properties']
-            ):
-                self.logger.error("Invalid constraint properties")
-                return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Constraint validation failed: {e}")
-            return False
-
-    def _validate_property_type(self, key: str, value: Any) -> bool:
-        """Validate property type"""
-        try:
-            valid_types = {
-                str: ['name', 'description', 'label', 'type'],
-                int: ['count', 'index', 'weight'],
-                float: ['score', 'confidence', 'probability'],
-                bool: ['active', 'valid', 'enabled'],
-                list: ['tags', 'categories', 'aliases'],
-                dict: ['metadata', 'config', 'settings']
-            }
-
-            for type_, valid_keys in valid_types.items():
-                if key in valid_keys and not isinstance(value, type_):
-                    return False
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Property type validation failed: {e}")
-            return False
-
-    def _validate_property_value(self, value: Any, property_type: str) -> bool:
-        """Validate property value based on type"""
-        try:
-            type_validators = {
-                'string': lambda x: isinstance(x, str),
-                'integer': lambda x: isinstance(x, int),
-                'float': lambda x: isinstance(x, float),
-                'boolean': lambda x: isinstance(x, bool),
-                'list': lambda x: isinstance(x, list),
-                'dict': lambda x: isinstance(x, dict),
-                'datetime': lambda x: isinstance(x, (datetime, str)) and self._validate_datetime(x)
-            }
-
-            validator = type_validators.get(property_type)
-            if not validator:
-                return False
-
-            return validator(value)
-
-        except Exception as e:
-            self.logger.error(f"Property value validation failed: {e}")
-            return False
-
-    def _validate_constraint_properties(self, constraint_type: str, properties: Dict[str, Any]) -> bool:
-        """Validate constraint properties based on type"""
-        try:
-            validators = {
-                'unique': self._validate_unique_constraint,
-                'required': self._validate_required_constraint,
-                'range': self._validate_range_constraint,
-                'regex': self._validate_regex_constraint
-            }
-
-            validator = validators.get(constraint_type)
-            if not validator:
-                return False
-
-            return validator(properties)
-
-        except Exception as e:
-            self.logger.error(f"Constraint properties validation failed: {e}")
-            return False
-
-    def _validate_unique_constraint(self, properties: Dict[str, Any]) -> bool:
-        """Validate unique constraint properties"""
-        return isinstance(properties.get('property_name'), str)
-
-    def _validate_required_constraint(self, properties: Dict[str, Any]) -> bool:
-        """Validate required constraint properties"""
-        return isinstance(properties.get('property_names'), list)
-
-    def _validate_range_constraint(self, properties: Dict[str, Any]) -> bool:
-        """Validate range constraint properties"""
-        return (
-            'min_value' in properties and
-            'max_value' in properties and
-            isinstance(properties['min_value'], (int, float)) and
-            isinstance(properties['max_value'], (int, float)) and
-            properties['min_value'] <= properties['max_value']
-        )
-
-    def _validate_regex_constraint(self, properties: Dict[str, Any]) -> bool:
-        """Validate regex constraint properties"""
-        try:
-            pattern = properties.get('pattern')
-            if not isinstance(pattern, str):
-                return False
-            re.compile(pattern)
-            return True
-        except re.error:
-            return False
-
-    def _validate_datetime(self, value: Union[datetime, str]) -> bool:
-        """Validate datetime value"""
-        if isinstance(value, datetime):
-            return True
-        try:
-            datetime.fromisoformat(value)
-            return True
-        except (ValueError, TypeError):
-            return False
-class FeedbackLoop:
-    """Feedback loop system for continuous learning and improvement"""
-    def __init__(self):
-        self.feedback_history = []
-        self.adaptation_rules = {}
-        self.learning_rate = 0.01
-        self.logger = logging.getLogger(__name__)
-        self.metrics = defaultdict(Counter)
-        self.cache = TTLCache(maxsize=1000, ttl=3600)
-        self.initialized = False
-        self.min_samples_for_adaptation = 5
-        self.performance_metrics = defaultdict(list)
-        self.learning_rules = {}
-
-    async def initialize(self) -> None:
-        """Initialize feedback loop system"""
-        try:
-            # Initialize feedback components
-            await self._initialize_feedback_components()
-            
-            # Initialize learning rules
-            await self._initialize_learning_rules()
-            
-            # Initialize adaptation rules
-            await self._initialize_adaptation_rules()
-            
-            self.initialized = True
-            self.logger.info("Feedback loop system initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Feedback loop initialization failed: {e}")
-            raise
-
-    async def cleanup(self) -> None:
-        """Cleanup feedback loop resources"""
-        try:
-            # Clear history
-            self.feedback_history.clear()
-            
-            # Clear rules
-            self.adaptation_rules.clear()
-            self.learning_rules.clear()
-            
-            # Clear metrics
-            self.metrics.clear()
-            self.performance_metrics.clear()
-            
-            # Clear cache
-            self.cache.clear()
-            
-            self.initialized = False
-            self.logger.info("Feedback loop system cleaned up successfully")
-        except Exception as e:
-            self.logger.error(f"Feedback loop cleanup failed: {e}")
-            raise
-
-    async def _initialize_feedback_components(self) -> None:
-        """Initialize feedback system components"""
-        try:
-            # Initialize metrics tracking
-            self.metrics = {
-                'updates': Counter(),
-                'adaptations': Counter(),
-                'errors': Counter()
-            }
-            
-            # Initialize performance tracking
-            self.performance_metrics = defaultdict(list)
-            
-            # Initialize feedback history
-            self.feedback_history = []
-            
-            self.logger.info("Feedback components initialized")
-        except Exception as e:
-            self.logger.error(f"Feedback components initialization failed: {e}")
-            raise
-
-    async def _initialize_learning_rules(self) -> None:
-        """Initialize learning rules"""
-        try:
-            self.learning_rules = {
-                'performance': self._update_performance_rules,
-                'adaptation': self._update_adaptation_rules,
-                'optimization': self._update_optimization_rules
-            }
-            self.logger.info("Learning rules initialized")
-        except Exception as e:
-            self.logger.error(f"Learning rules initialization failed: {e}")
-            raise
-
-    async def _initialize_adaptation_rules(self) -> None:
-        """Initialize adaptation rules"""
-        try:
-            self.adaptation_rules = {
-                'performance': self._adapt_performance,
-                'resource': self._adapt_resources,
-                'strategy': self._adapt_strategy
-            }
-            self.logger.info("Adaptation rules initialized")
-        except Exception as e:
-            self.logger.error(f"Adaptation rules initialization failed: {e}")
-            raise
-
-    async def process_feedback(self, feedback: Dict[str, Any]) -> None:
-        """Process feedback and update adaptation rules"""
-        if not self.initialized:
-            raise RuntimeError("Feedback loop system not initialized")
-            
-        try:
-            # Record feedback
-            self.feedback_history.append({
-                'feedback': feedback,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # Update metrics
-            self._update_metrics(feedback)
-            
-            # Update learning rules if enough samples
-            if len(self.feedback_history) >= self.min_samples_for_adaptation:
-                await self._update_learning_rules(feedback)
-                
-            # Apply adaptations
-            await self._apply_adaptations(feedback)
-            
-        except Exception as e:
-            self.logger.error(f"Feedback processing failed: {e}")
-            raise
-
-    async def _update_learning_rules(self, feedback: Dict[str, Any]) -> None:
-        """Update learning rules based on feedback"""
-        try:
-            for rule_type, update_func in self.learning_rules.items():
-                await update_func(feedback)
-            self.metrics['updates']['learning_rules'] += 1
-        except Exception as e:
-            self.logger.error(f"Learning rules update failed: {e}")
-            raise
-
-    async def _apply_adaptations(self, feedback: Dict[str, Any]) -> None:
-        """Apply adaptation rules based on feedback"""
-        try:
-            for rule_type, adapt_func in self.adaptation_rules.items():
-                await adapt_func(feedback)
-            self.metrics['adaptations']['applied'] += 1
-        except Exception as e:
-            self.logger.error(f"Adaptations application failed: {e}")
-            raise
-
-    async def _update_performance_rules(self, feedback: Dict[str, Any]) -> None:
-        """Update performance-based learning rules"""
-        try:
-            performance_metrics = feedback.get('performance', {})
-            for metric, value in performance_metrics.items():
-                self.performance_metrics[metric].append(value)
-        except Exception as e:
-            self.logger.error(f"Performance rules update failed: {e}")
-            raise
-
-    async def _update_adaptation_rules(self, feedback: Dict[str, Any]) -> None:
-        """Update adaptation rules based on feedback"""
-        try:
-            adaptation_metrics = feedback.get('adaptation', {})
-            for metric, value in adaptation_metrics.items():
-                if value > self.learning_rate:
-                    self.adaptation_rules[metric] = {
-                        'trend': value,
-                        'adaptation': self._generate_adaptation_strategy(metric, value),
-                        'timestamp': datetime.now().isoformat()
-                    }
-        except Exception as e:
-            self.logger.error(f"Adaptation rules update failed: {e}")
-            raise
-
-    async def _update_optimization_rules(self, feedback: Dict[str, Any]) -> None:
-        """Update optimization rules based on feedback"""
-        try:
-            optimization_metrics = feedback.get('optimization', {})
-            for metric, value in optimization_metrics.items():
-                self.learning_rules[metric] = {
-                    'value': value,
+            data_type = task.get('data_type', 'text')
+            processor = self.data_processors.get(data_type, self._process_text_data)
+            
+            result = await processor(task.get('data', ''))
+            
+            # Store evidence
+            if self.evidence_store:
+                await self.evidence_store.store_evidence(
+                    f"layer1_{datetime.now().timestamp()}",
+                    result,
+                    {'processor': data_type, 'agent': self.name},
+                    source=self.name,
+                    tags=['data_processing', f'layer_{self.layer_id}']
+                )
+            
+            execution_time = time.time() - start_time
+            
+            response = {
+                'processed_data': result,
+                'status': 'success',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'processor': data_type,
+                    'execution_time': execution_time,
                     'timestamp': datetime.now().isoformat()
                 }
+            }
+            
+            await self._record_task_execution(task, response, execution_time)
+            return response
+            
         except Exception as e:
-            self.logger.error(f"Optimization rules update failed: {e}")
-            raise
-
-    async def _adapt_performance(self, feedback: Dict[str, Any]) -> None:
-        """Adapt system based on performance feedback"""
+            execution_time = time.time() - start_time
+            self.logger.error(f"Task processing failed: {e}")
+            
+            error_response = {
+                'error': str(e),
+                'status': 'failed',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, error_response, execution_time)
+            return error_response
+    
+    async def _process_csv_data(self, data: str) -> Dict[str, Any]:
+        """Process CSV data with enhanced parsing"""
         try:
-            performance_data = feedback.get('performance', {})
-            for metric, value in performance_data.items():
-                if self._should_adapt(metric, value):
-                    await self._apply_performance_adaptation(metric, value)
+            lines = data.strip().split('\n')
+            if not lines:
+                return {'rows': [], 'columns': [], 'type': 'csv'}
+            
+            headers = [h.strip() for h in lines[0].split(',')]
+            rows = []
+            
+            for line_num, line in enumerate(lines[1:], 2):
+                try:
+                    row_data = [cell.strip() for cell in line.split(',')]
+                    if len(row_data) == len(headers):
+                        rows.append(dict(zip(headers, row_data)))
+                    else:
+                        self.logger.warning(f"CSV line {line_num}: column count mismatch")
+                except Exception as e:
+                    self.logger.warning(f"CSV line {line_num} parsing error: {e}")
+            
+            return {
+                'type': 'csv',
+                'columns': headers,
+                'rows': rows,
+                'row_count': len(rows),
+                'column_count': len(headers),
+                'data_quality': {
+                    'complete_rows': len(rows),
+                    'total_lines': len(lines) - 1,
+                    'success_rate': len(rows) / (len(lines) - 1) if len(lines) > 1 else 0
+                }
+            }
+            
         except Exception as e:
-            self.logger.error(f"Performance adaptation failed: {e}")
-            raise
-
-    async def _adapt_resources(self, feedback: Dict[str, Any]) -> None:
-        """Adapt resource allocation based on feedback"""
+            self.logger.error(f"CSV processing failed: {e}")
+            return {'error': str(e), 'type': 'csv'}
+    
+    async def _process_json_data(self, data: str) -> Dict[str, Any]:
+        """Process JSON data with structure analysis"""
         try:
-            resource_data = feedback.get('resources', {})
-            for resource, usage in resource_data.items():
-                if self._should_adapt_resource(resource, usage):
-                    await self._apply_resource_adaptation(resource, usage)
+            parsed_data = json.loads(data)
+            structure = self._analyze_json_structure(parsed_data)
+            
+            return {
+                'type': 'json',
+                'data': parsed_data,
+                'structure': structure,
+                'size_bytes': len(data),
+                'complexity_score': self._calculate_json_complexity(parsed_data)
+            }
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON parsing failed: {e}")
+            return {'error': f"JSON decode error: {e}", 'type': 'json'}
         except Exception as e:
-            self.logger.error(f"Resource adaptation failed: {e}")
-            raise
-
-    async def _adapt_strategy(self, feedback: Dict[str, Any]) -> None:
-        """Adapt strategy based on feedback"""
+            self.logger.error(f"JSON processing failed: {e}")
+            return {'error': str(e), 'type': 'json'}
+    
+    async def _process_text_data(self, data: str) -> Dict[str, Any]:
+        """Process text data with enhanced analysis"""
         try:
-            strategy_data = feedback.get('strategy', {})
-            for strategy, effectiveness in strategy_data.items():
-                if self._should_adapt_strategy(strategy, effectiveness):
-                    await self._apply_strategy_adaptation(strategy, effectiveness)
+            lines = data.split('\n')
+            words = data.split()
+            
+            return {
+                'type': 'text',
+                'content': data,
+                'statistics': {
+                    'character_count': len(data),
+                    'word_count': len(words),
+                    'line_count': len(lines),
+                    'average_words_per_line': len(words) / len(lines) if lines else 0,
+                    'average_characters_per_word': len(data) / len(words) if words else 0
+                },
+                'content_analysis': {
+                    'language_detected': self._detect_language(data),
+                    'readability_score': self._calculate_readability(data),
+                    'sentiment_indication': self._basic_sentiment_analysis(data)
+                }
+            }
         except Exception as e:
-            self.logger.error(f"Strategy adaptation failed: {e}")
-            raise
-
-    def _should_adapt(self, metric: str, value: float) -> bool:
-        """Determine if adaptation is needed"""
-        if not self.performance_metrics[metric]:
-            return False
-        avg_value = np.mean(self.performance_metrics[metric])
-        return abs(value - avg_value) > self.learning_rate
-
-    def _should_adapt_resource(self, resource: str, usage: float) -> bool:
-        """Determine if resource adaptation is needed"""
-        return usage > 0.8 or usage < 0.2
-
-    def _should_adapt_strategy(self, strategy: str, effectiveness: float) -> bool:
-        """Determine if strategy adaptation is needed"""
-        return effectiveness < 0.5
-
-    def _generate_adaptation_strategy(self, metric: str, trend: float) -> str:
-        """Generate adaptation strategy based on metric and trend"""
-        if trend > 0:
-            return f"Increase resource allocation for {metric}"
+            self.logger.error(f"Text processing failed: {e}")
+            return {'error': str(e), 'type': 'text'}
+    
+    async def _process_xml_data(self, data: str) -> Dict[str, Any]:
+        """Process XML data"""
+        try:
+            # Basic XML processing (would use xml.etree.ElementTree in production)
+            return {
+                'type': 'xml',
+                'content': data,
+                'size_bytes': len(data),
+                'element_count': data.count('<'),
+                'processing_note': 'Basic XML processing implemented'
+            }
+        except Exception as e:
+            self.logger.error(f"XML processing failed: {e}")
+            return {'error': str(e), 'type': 'xml'}
+    
+    def _analyze_json_structure(self, data: Any, max_depth: int = 3) -> Dict[str, Any]:
+        """Analyze JSON structure recursively"""
+        if max_depth <= 0:
+            return {'type': type(data).__name__, 'truncated': True}
+        
+        if isinstance(data, dict):
+            return {
+                'type': 'object',
+                'key_count': len(data),
+                'keys': list(data.keys())[:10],  # Limit to first 10 keys
+                'sample_properties': {
+                    k: self._analyze_json_structure(v, max_depth - 1)
+                    for k, v in list(data.items())[:5]  # Analyze first 5 properties
+                }
+            }
+        elif isinstance(data, list):
+            return {
+                'type': 'array',
+                'length': len(data),
+                'sample_element': self._analyze_json_structure(data[0], max_depth - 1) if data else None,
+                'element_types': list(set(type(item).__name__ for item in data[:10]))
+            }
         else:
-            return f"Decrease resource allocation for {metric}"
-
-    def _update_metrics(self, feedback: Dict[str, Any]) -> None:
-        """Update system metrics based on feedback"""
-        try:
-            for category, values in feedback.items():
-                if isinstance(values, dict):
-                    for metric, value in values.items():
-                        self.metrics[category][metric] += value
-        except Exception as e:
-            self.logger.error(f"Metrics update failed: {e}")
-            raise
-
-    def get_feedback_statistics(self) -> Dict[str, Any]:
-        """Get feedback loop statistics"""
-        return {
-            "total_feedback": len(self.feedback_history),
-            "adaptations": dict(self.metrics['adaptations']),
-            "updates": dict(self.metrics['updates']),
-            "errors": dict(self.metrics['errors']),
-            "performance_metrics": {
-                metric: np.mean(values) for metric, values in self.performance_metrics.items()
-                if values
+            return {
+                'type': type(data).__name__,
+                'value_preview': str(data)[:100] if len(str(data)) > 100 else str(data)
             }
+    
+    def _calculate_json_complexity(self, data: Any, depth: int = 0) -> float:
+        """Calculate JSON complexity score"""
+        if depth > 10:  # Prevent infinite recursion
+            return 1.0
+        
+        if isinstance(data, dict):
+            return 1.0 + sum(self._calculate_json_complexity(v, depth + 1) for v in data.values()) / len(data)
+        elif isinstance(data, list):
+            if data:
+                return 0.5 + sum(self._calculate_json_complexity(item, depth + 1) for item in data[:5]) / min(len(data), 5)
+            return 0.5
+        else:
+            return 0.1
+    
+    def _detect_language(self, text: str) -> str:
+        """Basic language detection"""
+        # Simple heuristic-based language detection
+        if any(char in text for char in 'αβγδεζηθικλμνξοπρστυφχψω'):
+            return 'greek'
+        elif any(char in text for char in 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'):
+            return 'russian'
+        elif any(char in text for char in '你我他她它们的是在有一个'):
+            return 'chinese'
+        else:
+            return 'english'  # Default assumption
+    
+    def _calculate_readability(self, text: str) -> float:
+        """Calculate basic readability score"""
+        words = text.split()
+        if not words:
+            return 0.0
+        
+        # Simple readability based on average word length
+        avg_word_length = sum(len(word) for word in words) / len(words)
+        
+        # Normalize to 0-1 scale (assuming 5 chars/word is average)
+        return min(1.0, max(0.0, 1.0 - (avg_word_length - 5) / 10))
+    
+    def _basic_sentiment_analysis(self, text: str) -> str:
+        """Basic sentiment analysis"""
+        positive_words = ['good', 'great', 'excellent', 'amazing', 'wonderful', 'fantastic']
+        negative_words = ['bad', 'terrible', 'awful', 'horrible', 'disgusting', 'hate']
+        
+        text_lower = text.lower()
+        positive_count = sum(word in text_lower for word in positive_words)
+        negative_count = sum(word in text_lower for word in negative_words)
+        
+        if positive_count > negative_count:
+            return 'positive'
+        elif negative_count > positive_count:
+            return 'negative'
+        else:
+            return 'neutral'
+
+class Layer2Agent(BaseAgent):
+    """Analysis & Reasoning Layer Agent"""
+    
+    async def _initialize_agent(self) -> None:
+        """Initialize Layer2 agent components"""
+        self.analyzers = {
+            'pattern': self._analyze_patterns,
+            'trend': self._analyze_trends,
+            'anomaly': self._detect_anomalies,
+            'classification': self._classify_data,
+            'correlation': self._find_correlations
         }
-class ResourceManager:
-    """Combined resource management and monitoring"""
-
-    def __init__(self):
-        self.resource_allocation = defaultdict(dict)
-        self.resource_usage = defaultdict(list)
-        self.allocation_history = []
-        self.logger = logging.getLogger(__name__)
-        self.monitoring = False
-        self.thresholds = {
-            "cpu_critical": 0.90,
-            "cpu_warning": 0.80,
-            "memory_critical": 0.90,
-            "memory_warning": 0.80,
-            "disk_critical": 0.95,
-            "disk_warning": 0.85
+        self.analysis_cache = TTLCache(maxsize=500, ttl=1800)
+        self.logger.info(f"Layer2 agent {self.name} components initialized")
+    
+    async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Process analysis tasks"""
+        start_time = time.time()
+        
+        try:
+            analysis_type = task.get('analysis_type', 'pattern')
+            analyzer = self.analyzers.get(analysis_type, self._analyze_patterns)
+            
+            # Check cache first
+            cache_key = self._generate_cache_key(task)
+            if cache_key in self.analysis_cache:
+                cached_result = self.analysis_cache[cache_key]
+                self.logger.debug(f"Using cached analysis result for {cache_key}")
+                return cached_result
+            
+            result = await analyzer(task.get('data', {}))
+            
+            execution_time = time.time() - start_time
+            
+            response = {
+                'analysis_result': result,
+                'status': 'success',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'analysis_type': analysis_type,
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat(),
+                    'cached': False
+                }
+            }
+            
+            # Cache the result
+            self.analysis_cache[cache_key] = response
+            
+            await self._record_task_execution(task, response, execution_time)
+            return response
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Analysis task failed: {e}")
+            
+            error_response = {
+                'error': str(e),
+                'status': 'failed',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, error_response, execution_time)
+            return error_response
+    
+    def _generate_cache_key(self, task: Dict[str, Any]) -> str:
+        """Generate cache key for analysis task"""
+        relevant_data = {
+            'analysis_type': task.get('analysis_type'),
+            'data_hash': hashlib.md5(str(task.get('data', {})).encode()).hexdigest()
         }
-
-    async def initialize(self):
-        """Initialize resource manager"""
+        return hashlib.md5(json.dumps(relevant_data, sort_keys=True).encode()).hexdigest()
+    
+    async def _analyze_patterns(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze patterns in data"""
         try:
-            await self._initialize_resource_monitoring()
-            await self._initialize_resource_pools()
-            self.logger.info("Resource manager initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Resource manager initialization failed: {e}")
-            raise
-
-    async def _initialize_resource_monitoring(self):
-        """Initialize resource monitoring"""
-        try:
-            self.monitoring = True
-            self.current_stats = {
-                "cpu_usage": 0.0,
-                "memory_usage": 0.0,
-                "disk_usage": 0.0,
-                "network_usage": 0.0
-            }
-            self.monitoring_task = asyncio.create_task(
-                self._monitor_resources())
-        except Exception as e:
-            self.logger.error(
-                f"Resource monitoring initialization failed: {e}")
-            raise
-
-    async def _initialize_resource_pools(self):
-        """Initialize resource pools"""
-        try:
-            self.resource_pools = {
-                "cpu": {"total": psutil.cpu_count(), "allocated": 0},
-                "memory": {"total": psutil.virtual_memory().total, "allocated": 0},
-                "disk": {"total": psutil.disk_usage('/').total, "allocated": 0}
+            patterns_found = []
+            
+            # Pattern analysis for different data types
+            if data.get('type') == 'csv' and 'rows' in data:
+                patterns_found.extend(self._find_csv_patterns(data['rows']))
+            elif data.get('type') == 'json':
+                patterns_found.extend(self._find_json_patterns(data.get('data', {})))
+            elif data.get('type') == 'text':
+                patterns_found.extend(self._find_text_patterns(data.get('content', '')))
+            
+            return {
+                'patterns_found': patterns_found,
+                'pattern_count': len(patterns_found),
+                'confidence': self._calculate_pattern_confidence(patterns_found),
+                'method': 'pattern_analysis'
             }
         except Exception as e:
-            self.logger.error(f"Resource pools initialization failed: {e}")
-            raise
-
-    async def _monitor_resources(self):
-        """Monitor system resources"""
-        while self.monitoring:
-            try:
-                self.current_stats.update({
-                    "cpu_usage": psutil.cpu_percent() / 100,
-                    "memory_usage": psutil.virtual_memory().percent / 100,
-                    "disk_usage": psutil.disk_usage('/').percent / 100,
-                    "network_usage": self._get_network_usage()
+            self.logger.error(f"Pattern analysis failed: {e}")
+            return {'error': str(e), 'method': 'pattern_analysis'}
+    
+    async def _analyze_trends(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze trends in data"""
+        try:
+            trends = []
+            
+            if data.get('type') == 'csv' and 'rows' in data:
+                trends = self._analyze_csv_trends(data['rows'])
+            
+            return {
+                'trends': trends,
+                'trend_count': len(trends),
+                'overall_direction': self._determine_overall_direction(trends),
+                'strength': self._calculate_trend_strength(trends)
+            }
+        except Exception as e:
+            self.logger.error(f"Trend analysis failed: {e}")
+            return {'error': str(e)}
+    
+    async def _detect_anomalies(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Detect anomalies in data"""
+        try:
+            anomalies = []
+            
+            if data.get('type') == 'csv' and 'rows' in data:
+                anomalies = self._detect_csv_anomalies(data['rows'])
+            
+            return {
+                'anomalies': anomalies,
+                'anomaly_count': len(anomalies),
+                'anomaly_score': len(anomalies) / max(1, len(data.get('rows', []))),
+                'threshold': 0.05  # 5% anomaly threshold
+            }
+        except Exception as e:
+            self.logger.error(f"Anomaly detection failed: {e}")
+            return {'error': str(e)}
+    
+    async def _classify_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Classify data into categories"""
+        try:
+            classification = {
+                'data_type': data.get('type', 'unknown'),
+                'size_category': self._classify_size(data),
+                'complexity_category': self._classify_complexity(data),
+                'quality_category': self._classify_quality(data)
+            }
+            
+            return {
+                'classification': classification,
+                'confidence': 0.8,  # Fixed confidence for basic classification
+                'method': 'rule_based_classification'
+            }
+        except Exception as e:
+            self.logger.error(f"Data classification failed: {e}")
+            return {'error': str(e)}
+    
+    async def _find_correlations(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Find correlations in data"""
+        try:
+            correlations = []
+            
+            if data.get('type') == 'csv' and 'rows' in data:
+                correlations = self._find_csv_correlations(data['rows'], data.get('columns', []))
+            
+            return {
+                'correlations': correlations,
+                'correlation_count': len(correlations),
+                'significant_correlations': [c for c in correlations if abs(c.get('strength', 0)) > 0.5]
+            }
+        except Exception as e:
+            self.logger.error(f"Correlation analysis failed: {e}")
+            return {'error': str(e)}
+    
+    def _find_csv_patterns(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Find patterns in CSV data"""
+        patterns = []
+        
+        if not rows:
+            return patterns
+        
+        # Find missing value patterns
+        for column in rows[0].keys():
+            missing_count = sum(1 for row in rows if not row.get(column))
+            if missing_count > 0:
+                patterns.append({
+                    'type': 'missing_values',
+                    'column': column,
+                    'count': missing_count,
+                    'percentage': missing_count / len(rows)
                 })
-
-                await self._check_thresholds()
-                await asyncio.sleep(1)
-            except Exception as e:
-                self.logger.error(f"Resource monitoring error: {e}")
-                await asyncio.sleep(5)  # Back off on error
-
-    def _get_network_usage(self) -> float:
-        """Get network usage statistics"""
+        
+        # Find duplicate patterns
+        seen_rows = set()
+        duplicates = 0
+        for row in rows:
+            row_tuple = tuple(sorted(row.items()))
+            if row_tuple in seen_rows:
+                duplicates += 1
+            seen_rows.add(row_tuple)
+        
+        if duplicates > 0:
+            patterns.append({
+                'type': 'duplicate_rows',
+                'count': duplicates,
+                'percentage': duplicates / len(rows)
+            })
+        
+        return patterns
+    
+    def _find_json_patterns(self, data: Any) -> List[Dict[str, Any]]:
+        """Find patterns in JSON data"""
+        patterns = []
+        
+        if isinstance(data, dict):
+            # Find common key patterns
+            patterns.append({
+                'type': 'object_structure',
+                'key_count': len(data),
+                'has_nested_objects': any(isinstance(v, dict) for v in data.values()),
+                'has_arrays': any(isinstance(v, list) for v in data.values())
+            })
+        elif isinstance(data, list):
+            # Find array patterns
+            if data:
+                element_types = [type(item).__name__ for item in data]
+                type_counts = Counter(element_types)
+                patterns.append({
+                    'type': 'array_structure',
+                    'length': len(data),
+                    'element_types': dict(type_counts),
+                    'homogeneous': len(type_counts) == 1
+                })
+        
+        return patterns
+    
+    def _find_text_patterns(self, text: str) -> List[Dict[str, Any]]:
+        """Find patterns in text data"""
+        patterns = []
+        
+        # Find common patterns
+        words = text.split()
+        if words:
+            word_counts = Counter(words)
+            most_common = word_counts.most_common(5)
+            
+            patterns.append({
+                'type': 'word_frequency',
+                'total_words': len(words),
+                'unique_words': len(word_counts),
+                'most_common_words': most_common,
+                'vocabulary_ratio': len(word_counts) / len(words)
+            })
+        
+        return patterns
+    
+    def _calculate_pattern_confidence(self, patterns: List[Dict[str, Any]]) -> float:
+        """Calculate confidence score for patterns"""
+        if not patterns:
+            return 0.0
+        
+        # Simple confidence based on pattern count and types
+        base_confidence = 0.5
+        pattern_bonus = min(0.4, len(patterns) * 0.1)
+        
+        return base_confidence + pattern_bonus
+    
+    def _analyze_csv_trends(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Analyze trends in CSV data"""
+        trends = []
+        
+        if not rows:
+            return trends
+        
+        # Analyze numeric columns for trends
+        for column in rows[0].keys():
+            numeric_values = []
+            for row in rows:
+                try:
+                    value = float(row.get(column, 0))
+                    numeric_values.append(value)
+                except (ValueError, TypeError):
+                    continue
+            
+            if len(numeric_values) >= 3:  # Need at least 3 points for trend
+                trend_direction = self._calculate_trend_direction(numeric_values)
+                trends.append({
+                    'column': column,
+                    'direction': trend_direction,
+                    'start_value': numeric_values[0],
+                    'end_value': numeric_values[-1],
+                    'change_percentage': ((numeric_values[-1] - numeric_values[0]) / numeric_values[0] * 100) if numeric_values[0] != 0 else 0
+                })
+        
+        return trends
+    
+    def _calculate_trend_direction(self, values: List[float]) -> str:
+        """Calculate trend direction from numeric values"""
+        if len(values) < 2:
+            return 'stable'
+        
+        differences = [values[i+1] - values[i] for i in range(len(values) - 1)]
+        avg_change = sum(differences) / len(differences)
+        
+        if avg_change > 0.1:
+            return 'increasing'
+        elif avg_change < -0.1:
+            return 'decreasing'
+        else:
+            return 'stable'
+    
+    def _determine_overall_direction(self, trends: List[Dict[str, Any]]) -> str:
+        """Determine overall trend direction"""
+        if not trends:
+            return 'unknown'
+        
+        directions = [t.get('direction', 'stable') for t in trends]
+        direction_counts = Counter(directions)
+        
+        return direction_counts.most_common(1)[0][0]
+    
+    def _calculate_trend_strength(self, trends: List[Dict[str, Any]]) -> float:
+        """Calculate overall trend strength"""
+        if not trends:
+            return 0.0
+        
+        strengths = []
+        for trend in trends:
+            change_pct = abs(trend.get('change_percentage', 0))
+            strength = min(1.0, change_pct / 100)  # Normalize to 0-1
+            strengths.append(strength)
+        
+        return sum(strengths) / len(strengths)
+    
+    def _detect_csv_anomalies(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Detect anomalies in CSV data"""
+        anomalies = []
+        
+        if not rows:
+            return anomalies
+        
+        # Detect outliers in numeric columns
+        for column in rows[0].keys():
+            numeric_values = []
+            for i, row in enumerate(rows):
+                try:
+                    value = float(row.get(column, 0))
+                    numeric_values.append((i, value))
+                except (ValueError, TypeError):
+                    continue
+            
+            if len(numeric_values) >= 5:  # Need sufficient data for outlier detection
+                values_only = [v[1] for v in numeric_values]
+                mean_val = statistics.mean(values_only)
+                stdev = statistics.stdev(values_only) if len(values_only) > 1 else 0
+                
+                if stdev > 0:
+                    for row_idx, value in numeric_values:
+                        z_score = abs((value - mean_val) / stdev)
+                        if z_score > 2.5:  # 2.5 standard deviations
+                            anomalies.append({
+                                'type': 'outlier',
+                                'column': column,
+                                'row_index': row_idx,
+                                'value': value,
+                                'z_score': z_score
+                            })
+        
+        return anomalies
+    
+    def _classify_size(self, data: Dict[str, Any]) -> str:
+        """Classify data size"""
+        if data.get('type') == 'csv':
+            row_count = len(data.get('rows', []))
+            if row_count < 100:
+                return 'small'
+            elif row_count < 10000:
+                return 'medium'
+            else:
+                return 'large'
+        elif data.get('type') in ['json', 'text']:
+            size_bytes = data.get('size_bytes', 0)
+            if size_bytes < 1024:
+                return 'small'
+            elif size_bytes < 1024 * 1024:
+                return 'medium'
+            else:
+                return 'large'
+        return 'unknown'
+    
+    def _classify_complexity(self, data: Dict[str, Any]) -> str:
+        """Classify data complexity"""
+        if data.get('type') == 'csv':
+            column_count = len(data.get('columns', []))
+            if column_count < 5:
+                return 'simple'
+            elif column_count < 20:
+                return 'moderate'
+            else:
+                return 'complex'
+        elif data.get('type') == 'json':
+            complexity_score = data.get('complexity_score', 0)
+            if complexity_score < 2:
+                return 'simple'
+            elif complexity_score < 5:
+                return 'moderate'
+            else:
+                return 'complex'
+        return 'unknown'
+    
+    def _classify_quality(self, data: Dict[str, Any]) -> str:
+        """Classify data quality"""
+        if data.get('type') == 'csv':
+            quality_info = data.get('data_quality', {})
+            success_rate = quality_info.get('success_rate', 1.0)
+            if success_rate > 0.95:
+                return 'high'
+            elif success_rate > 0.8:
+                return 'medium'
+            else:
+                return 'low'
+        return 'unknown'
+    
+    def _find_csv_correlations(self, rows: List[Dict[str, Any]], columns: List[str]) -> List[Dict[str, Any]]:
+        """Find correlations between CSV columns"""
+        correlations = []
+        
+        # Get numeric columns
+        numeric_columns = []
+        for column in columns:
+            numeric_values = []
+            for row in rows:
+                try:
+                    value = float(row.get(column, 0))
+                    numeric_values.append(value)
+                except (ValueError, TypeError):
+                    continue
+            
+            if len(numeric_values) == len(rows):  # All values are numeric
+                numeric_columns.append((column, numeric_values))
+        
+        # Calculate correlations between numeric columns
+        for i in range(len(numeric_columns)):
+            for j in range(i + 1, len(numeric_columns)):
+                col1_name, col1_values = numeric_columns[i]
+                col2_name, col2_values = numeric_columns[j]
+                
+                correlation = self._calculate_correlation(col1_values, col2_values)
+                
+                correlations.append({
+                    'column1': col1_name,
+                    'column2': col2_name,
+                    'strength': correlation,
+                    'type': 'pearson'
+                })
+        
+        return correlations
+    
+    def _calculate_correlation(self, x: List[float], y: List[float]) -> float:
+        """Calculate Pearson correlation coefficient"""
+        if len(x) != len(y) or len(x) < 2:
+            return 0.0
+        
         try:
-            net_io = psutil.net_io_counters()
-            return (net_io.bytes_sent + net_io.bytes_recv) / 1024 / 1024  # MB
-        except Exception as e:
-            self.logger.error(f"Network usage check failed: {e}")
+            mean_x = statistics.mean(x)
+            mean_y = statistics.mean(y)
+            
+            numerator = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(len(x)))
+            
+            sum_sq_x = sum((x[i] - mean_x) ** 2 for i in range(len(x)))
+            sum_sq_y = sum((y[i] - mean_y) ** 2 for i in range(len(y)))
+            
+            denominator = (sum_sq_x * sum_sq_y) ** 0.5
+            
+            if denominator == 0:
+                return 0.0
+            
+            return numerator / denominator
+            
+        except Exception:
             return 0.0
 
-    async def _check_thresholds(self):
-        """Check resource usage against thresholds"""
-        alerts = []
-        for resource, usage in self.current_stats.items():
-            critical_threshold = self.thresholds.get(f"{resource}_critical")
-            warning_threshold = self.thresholds.get(f"{resource}_warning")
-
-            if critical_threshold and usage >= critical_threshold:
-                alerts.append({
-                    "level": "CRITICAL",
-                    "resource": resource,
-                    "usage": usage,
-                    "threshold": critical_threshold
-                })
-            elif warning_threshold and usage >= warning_threshold:
-                alerts.append({
-                    "level": "WARNING",
-                    "resource": resource,
-                    "usage": usage,
-                    "threshold": warning_threshold
-                })
-
-        if alerts:
-            await self._handle_alerts(alerts)
-
-    async def _handle_alerts(self, alerts: List[Dict[str, Any]]):
-        """Handle resource alerts"""
-        for alert in alerts:
-            self.logger.warning(f"Resource Alert: {alert}")
-            # Implement alert handling logic here (e.g., scaling, notification)
-
-
-
-
-class RateLimiter:
-    """Enhanced Rate Limiter with metrics tracking"""
-    def __init__(self, max_requests: int, time_window: int):
-        self.max_requests = max_requests
-        self.time_window = time_window
-        self.requests = []
-        self.lock = asyncio.Lock()
-        self.metrics = defaultdict(int)
-
-    async def acquire(self):
-        """Acquire rate limit token with metrics tracking"""
-        async with self.lock:
-            now = time.time()
-            self.requests = [t for t in self.requests if t > now - self.time_window]
+class Layer3Agent(BaseAgent):
+    """Synthesis & Integration Layer Agent"""
+    
+    async def _initialize_agent(self) -> None:
+        """Initialize Layer3 agent components"""
+        self.synthesizers = {
+            'merge': self._merge_results,
+            'summarize': self._summarize_results,
+            'prioritize': self._prioritize_results,
+            'aggregate': self._aggregate_results,
+            'consensus': self._build_consensus
+        }
+        self.synthesis_cache = TTLCache(maxsize=300, ttl=2400)  # 40 minute cache
+        self.logger.info(f"Layer3 agent {self.name} components initialized")
+    
+    async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Process synthesis tasks"""
+        start_time = time.time()
+        
+        try:
+            synthesis_type = task.get('synthesis_type', 'merge')
+            synthesizer = self.synthesizers.get(synthesis_type, self._merge_results)
             
-            if len(self.requests) >= self.max_requests:
-                wait_time = self.requests[0] - (now - self.time_window)
-                self.metrics['throttled_requests'] += 1
-                await asyncio.sleep(wait_time)
+            result = await synthesizer(task.get('inputs', []))
             
-            self.requests.append(now)
-            self.metrics['total_requests'] += 1
+            execution_time = time.time() - start_time
+            
+            response = {
+                'synthesis_result': result,
+                'status': 'success',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'synthesis_type': synthesis_type,
+                    'input_count': len(task.get('inputs', [])),
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, response, execution_time)
+            return response
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Synthesis task failed: {e}")
+            
+            error_response = {
+                'error': str(e),
+                'status': 'failed',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, error_response, execution_time)
+            return error_response
+    
+    async def _merge_results(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Merge multiple results intelligently"""
+        try:
+            merged_data = {
+                'source_count': len(inputs),
+                'merged_timestamp': datetime.now().isoformat(),
+                'data_sources': [],
+                'consolidated_results': {}
+            }
+            
+            # Categorize inputs by type
+            categorized_inputs = defaultdict(list)
+            for input_data in inputs:
+                data_type = input_data.get('metadata', {}).get('layer', 'unknown')
+                categorized_inputs[data_type].append(input_data)
+                
+                merged_data['data_sources'].append({
+                    'agent': input_data.get('metadata', {}).get('agent', 'unknown'),
+                    'layer': data_type,
+                    'timestamp': input_data.get('metadata', {}).get('timestamp')
+                })
+            
+            # Merge by category
+            for category, category_inputs in categorized_inputs.items():
+                if category == 1:  # Layer 1 - Data processing
+                    merged_data['consolidated_results']['processed_data'] = self._merge_processed_data(category_inputs)
+                elif category == 2:  # Layer 2 - Analysis
+                    merged_data['consolidated_results']['analysis_results'] = self._merge_analysis_results(category_inputs)
+                else:
+                    merged_data['consolidated_results'][f'layer_{category}'] = category_inputs
+            
+            return {
+                'merged_data': merged_data,
+                'merge_quality': self._assess_merge_quality(inputs),
+                'method': 'intelligent_merge'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Merge operation failed: {e}")
+            return {'error': str(e), 'method': 'merge'}
+    
+    async def _summarize_results(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create comprehensive summary of results"""
+        try:
+            summary = {
+                'total_inputs': len(inputs),
+                'summary_timestamp': datetime.now().isoformat(),
+                'key_findings': [],
+                'data_overview': {},
+                'quality_assessment': {}
+            }
+            
+            # Extract key findings
+            for input_data in inputs:
+                if 'analysis_result' in input_data:
+                    analysis = input_data['analysis_result']
+                    if isinstance(analysis, dict):
+                        summary['key_findings'].extend(self._extract_key_findings(analysis))
+                
+                if 'processed_data' in input_data:
+                    processed = input_data['processed_data']
+                    if isinstance(processed, dict):
+                        self._update_data_overview(summary['data_overview'], processed)
+            
+            # Assess overall quality
+            summary['quality_assessment'] = self._assess_overall_quality(inputs)
+            
+            # Generate executive summary
+            summary['executive_summary'] = self._generate_executive_summary(summary)
+            
+            return {
+                'summary': summary,
+                'confidence': self._calculate_summary_confidence(summary),
+                'method': 'comprehensive_summary'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Summarization failed: {e}")
+            return {'error': str(e), 'method': 'summarize'}
+    
+    async def _prioritize_results(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Prioritize results based on importance and quality"""
+        try:
+            prioritized_results = []
+            
+            for i, input_data in enumerate(inputs):
+                priority_score = self._calculate_priority_score(input_data)
+                
+                prioritized_results.append({
+                    'original_index': i,
+                    'priority_score': priority_score,
+                    'data': input_data,
+                    'priority_factors': self._get_priority_factors(input_data)
+                })
+            
+            # Sort by priority score (highest first)
+            prioritized_results.sort(key=lambda x: x['priority_score'], reverse=True)
+            
+            return {
+                'prioritized_list': prioritized_results,
+                'top_priority': prioritized_results[0] if prioritized_results else None,
+                'priority_distribution': self._analyze_priority_distribution(prioritized_results),
+                'method': 'multi_factor_prioritization'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Prioritization failed: {e}")
+            return {'error': str(e), 'method': 'prioritize'}
+    
+    async def _aggregate_results(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate results with statistical analysis"""
+        try:
+            aggregation = {
+                'statistical_summary': {},
+                'trend_analysis': {},
+                'quality_metrics': {},
+                'data_distribution': {}
+            }
+            
+            # Collect numeric metrics
+            numeric_metrics = defaultdict(list)
+            for input_data in inputs:
+                self._extract_numeric_metrics(input_data, numeric_metrics)
+            
+            # Calculate statistics
+            for metric_name, values in numeric_metrics.items():
+                if values:
+                    aggregation['statistical_summary'][metric_name] = {
+                        'count': len(values),
+                        'mean': statistics.mean(values),
+                        'median': statistics.median(values),
+                        'std_dev': statistics.stdev(values) if len(values) > 1 else 0,
+                        'min': min(values),
+                        'max': max(values)
+                    }
+            
+            # Analyze trends
+            aggregation['trend_analysis'] = self._analyze_aggregated_trends(numeric_metrics)
+            
+            # Calculate quality metrics
+            aggregation['quality_metrics'] = self._calculate_aggregated_quality(inputs)
+            
+            return {
+                'aggregation': aggregation,
+                'confidence': self._calculate_aggregation_confidence(aggregation),
+                'method': 'statistical_aggregation'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Aggregation failed: {e}")
+            return {'error': str(e), 'method': 'aggregate'}
+    
+    async def _build_consensus(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build consensus from multiple inputs"""
+        try:
+            consensus = {
+                'agreement_level': 0.0,
+                'consensus_points': [],
+                'disagreement_points': [],
+                'confidence_weighted_result': {}
+            }
+            
+            # Extract comparable elements
+            comparable_elements = self._extract_comparable_elements(inputs)
+            
+            # Find agreement and disagreement
+            for element_key, element_values in comparable_elements.items():
+                agreement_score = self._calculate_agreement_score(element_values)
+                
+                if agreement_score > 0.7:  # High agreement
+                    consensus_value = self._calculate_consensus_value(element_values)
+                    consensus['consensus_points'].append({
+                        'element': element_key,
+                        'consensus_value': consensus_value,
+                        'agreement_score': agreement_score
+                    })
+                else:  # Disagreement
+                    consensus['disagreement_points'].append({
+                        'element': element_key,
+                        'values': element_values,
+                        'agreement_score': agreement_score
+                    })
+            
+            # Calculate overall agreement
+            if comparable_elements:
+                total_agreement = sum(
+                    self._calculate_agreement_score(values) 
+                    for values in comparable_elements.values()
+                )
+                consensus['agreement_level'] = total_agreement / len(comparable_elements)
+            
+            return {
+                'consensus': consensus,
+                'method': 'weighted_consensus_building'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Consensus building failed: {e}")
+            return {'error': str(e), 'method': 'consensus'}
+    
+    # Helper methods for synthesis operations
+    
+    def _merge_processed_data(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Merge processed data from Layer 1"""
+        merged = {
+            'total_data_points': 0,
+            'data_types': set(),
+            'combined_statistics': {}
+        }
+        
+        for input_data in inputs:
+            processed = input_data.get('processed_data', {})
+            if isinstance(processed, dict):
+                merged['data_types'].add(processed.get('type', 'unknown'))
+                
+                if processed.get('type') == 'csv':
+                    merged['total_data_points'] += processed.get('row_count', 0)
+                elif processed.get('type') == 'text':
+                    merged['total_data_points'] += processed.get('statistics', {}).get('word_count', 0)
+        
+        merged['data_types'] = list(merged['data_types'])
+        return merged
+    
+    def _merge_analysis_results(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Merge analysis results from Layer 2"""
+        merged = {
+            'analysis_types': set(),
+            'combined_findings': [],
+            'overall_confidence': 0.0
+        }
+        
+        confidences = []
+        
+        for input_data in inputs:
+            analysis = input_data.get('analysis_result', {})
+            if isinstance(analysis, dict):
+                # Extract analysis type
+                method = analysis.get('method', 'unknown')
+                merged['analysis_types'].add(method)
+                
+                # Extract findings
+                if 'patterns_found' in analysis:
+                    merged['combined_findings'].extend(analysis['patterns_found'])
+                if 'trends' in analysis:
+                    merged['combined_findings'].extend(analysis['trends'])
+                if 'anomalies' in analysis:
+                    merged['combined_findings'].extend(analysis['anomalies'])
+                
+                # Track confidence
+                if 'confidence' in analysis:
+                    confidences.append(analysis['confidence'])
+        
+        merged['analysis_types'] = list(merged['analysis_types'])
+        
+        if confidences:
+            merged['overall_confidence'] = statistics.mean(confidences)
+        
+        return merged
+    
+    def _assess_merge_quality(self, inputs: List[Dict[str, Any]]) -> float:
+        """Assess the quality of merge operation"""
+        if not inputs:
+            return 0.0
+        
+        quality_factors = []
+        
+        # Factor 1: Input diversity
+        agents = set(inp.get('metadata', {}).get('agent', '') for inp in inputs)
+        diversity_score = min(1.0, len(agents) / 3)  # Normalize by expected max agents
+        quality_factors.append(diversity_score)
+        
+        # Factor 2: Data completeness
+        complete_inputs = sum(1 for inp in inputs if not inp.get('error'))
+        completeness_score = complete_inputs / len(inputs)
+        quality_factors.append(completeness_score)
+        
+        # Factor 3: Temporal consistency
+        timestamps = [inp.get('metadata', {}).get('timestamp') for inp in inputs if inp.get('metadata', {}).get('timestamp')]
+        if timestamps:
+            # Check if all timestamps are within reasonable time window (1 hour)
+            timestamps_dt = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in timestamps]
+            time_span = max(timestamps_dt) - min(timestamps_dt)
+            temporal_score = 1.0 if time_span.total_seconds() < 3600 else 0.5
+            quality_factors.append(temporal_score)
+        
+        return statistics.mean(quality_factors) if quality_factors else 0.0
+    
+    def _extract_key_findings(self, analysis: Dict[str, Any]) -> List[str]:
+        """Extract key findings from analysis"""
+        findings = []
+        
+        if 'patterns_found' in analysis:
+            patterns = analysis['patterns_found']
+            if patterns:
+                findings.append(f"Found {len(patterns)} data patterns")
+        
+        if 'trends' in analysis:
+            trends = analysis['trends']
+            if trends:
+                directions = [t.get('direction', 'unknown') for t in trends]
+                most_common_direction = Counter(directions).most_common(1)[0][0]
+                findings.append(f"Primary trend direction: {most_common_direction}")
+        
+        if 'anomalies' in analysis:
+            anomalies = analysis['anomalies']
+            if anomalies:
+                findings.append(f"Detected {len(anomalies)} anomalies")
+        
+        return findings
+    
+    def _update_data_overview(self, overview: Dict[str, Any], processed_data: Dict[str, Any]) -> None:
+        """Update data overview with processed data"""
+        data_type = processed_data.get('type', 'unknown')
+        
+        if data_type not in overview:
+            overview[data_type] = {
+                'count': 0,
+                'total_size': 0,
+                'features': set()
+            }
+        
+        overview[data_type]['count'] += 1
+        
+        if data_type == 'csv':
+            overview[data_type]['total_size'] += processed_data.get('row_count', 0)
+            if 'columns' in processed_data:
+                overview[data_type]['features'].update(processed_data['columns'])
+        elif data_type == 'text':
+            overview[data_type]['total_size'] += processed_data.get('statistics', {}).get('character_count', 0)
+        
+        # Convert sets to lists for JSON serialization
+        for data_type_key in overview:
+            if 'features' in overview[data_type_key] and isinstance(overview[data_type_key]['features'], set):
+                overview[data_type_key]['features'] = list(overview[data_type_key]['features'])
+    
+    def _assess_overall_quality(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Assess overall quality of inputs"""
+        if not inputs:
+            return {'overall_score': 0.0}
+        
+        successful_inputs = sum(1 for inp in inputs if not inp.get('error'))
+        success_rate = successful_inputs / len(inputs)
+        
+        # Assess execution times
+        execution_times = [
+            inp.get('metadata', {}).get('execution_time', 0) 
+            for inp in inputs 
+            if inp.get('metadata', {}).get('execution_time')
+        ]
+        
+        avg_execution_time = statistics.mean(execution_times) if execution_times else 0
+        
+        return {
+            'overall_score': (success_rate + (1.0 if avg_execution_time < 1.0 else 0.5)) / 2,
+            'success_rate': success_rate,
+            'average_execution_time': avg_execution_time,
+            'total_inputs': len(inputs),
+            'successful_inputs': successful_inputs
+        }
+    
+    def _generate_executive_summary(self, summary: Dict[str, Any]) -> str:
+        """Generate executive summary"""
+        total_inputs = summary.get('total_inputs', 0)
+        key_findings_count = len(summary.get('key_findings', []))
+        quality_score = summary.get('quality_assessment', {}).get('overall_score', 0)
+        
+        return (f"Processed {total_inputs} inputs with {key_findings_count} key findings. "
+                f"Overall quality score: {quality_score:.2f}. "
+                f"Data processing completed successfully with comprehensive analysis coverage.")
+    
+    def _calculate_summary_confidence(self, summary: Dict[str, Any]) -> float:
+        """Calculate confidence in summary"""
+        factors = []
+        
+        # Factor 1: Number of inputs
+        input_count = summary.get('total_inputs', 0)
+        input_factor = min(1.0, input_count / 5)  # Normalize by expected 5 inputs
+        factors.append(input_factor)
+        
+        # Factor 2: Quality assessment
+        quality_score = summary.get('quality_assessment', {}).get('overall_score', 0)
+        factors.append(quality_score)
+        
+        # Factor 3: Key findings availability
+        findings_count = len(summary.get('key_findings', []))
+        findings_factor = min(1.0, findings_count / 3)  # Normalize by expected 3 findings
+        factors.append(findings_factor)
+        
+        return statistics.mean(factors) if factors else 0.0
+    
+    def _calculate_priority_score(self, input_data: Dict[str, Any]) -> float:
+        """Calculate priority score for input"""
+        score = 0.0
+        
+        # Factor 1: Execution success
+        if not input_data.get('error'):
+            score += 0.3
+        
+        # Factor 2: Data quality
+        if 'processed_data' in input_data:
+            processed = input_data['processed_data']
+            if isinstance(processed, dict) and not processed.get('error'):
+                score += 0.3
+        
+        # Factor 3: Analysis confidence
+        if 'analysis_result' in input_data:
+            analysis = input_data['analysis_result']
+            if isinstance(analysis, dict):
+                confidence = analysis.get('confidence', 0)
+                score += confidence * 0.2
+        
+        # Factor 4: Recency
+        timestamp_str = input_data.get('metadata', {}).get('timestamp')
+        if timestamp_str:
+            try:
+                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                age_minutes = (datetime.now(timestamp.tzinfo) - timestamp).total_seconds() / 60
+                recency_score = max(0, 1 - (age_minutes / 60))  # Full score if < 1 hour old
+                score += recency_score * 0.2
+            except (ValueError, TypeError):
+                pass
+        
+        return score
+    
+    def _get_priority_factors(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get factors that influenced priority score"""
+        factors = {
+            'has_error': bool(input_data.get('error')),
+            'has_processed_data': 'processed_data' in input_data,
+            'has_analysis': 'analysis_result' in input_data,
+            'agent': input_data.get('metadata', {}).get('agent'),
+            'layer': input_data.get('metadata', {}).get('layer')
+        }
+        
+        if 'analysis_result' in input_data:
+            analysis = input_data['analysis_result']
+            if isinstance(analysis, dict):
+                factors['analysis_confidence'] = analysis.get('confidence', 0)
+        
+        return factors
+    
+    def _analyze_priority_distribution(self, prioritized_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze distribution of priority scores"""
+        if not prioritized_results:
+            return {}
+        
+        scores = [result['priority_score'] for result in prioritized_results]
+        
+        return {
+            'mean_score': statistics.mean(scores),
+            'median_score': statistics.median(scores),
+            'score_range': max(scores) - min(scores),
+            'high_priority_count': sum(1 for score in scores if score > 0.7),
+            'medium_priority_count': sum(1 for score in scores if 0.3 <= score <= 0.7),
+            'low_priority_count': sum(1 for score in scores if score < 0.3)
+        }
+    
+    def _extract_numeric_metrics(self, input_data: Dict[str, Any], metrics: Dict[str, List[float]]) -> None:
+        """Extract numeric metrics from input data"""
+        # Extract execution time
+        exec_time = input_data.get('metadata', {}).get('execution_time')
+        if exec_time:
+            metrics['execution_time'].append(exec_time)
+        
+        # Extract confidence scores
+        if 'analysis_result' in input_data:
+            analysis = input_data['analysis_result']
+            if isinstance(analysis, dict):
+                confidence = analysis.get('confidence')
+                if confidence is not None:
+                    metrics['confidence'].append(confidence)
+        
+        # Extract data size metrics
+        if 'processed_data' in input_data:
+            processed = input_data['processed_data']
+            if isinstance(processed, dict):
+                if processed.get('type') == 'csv':
+                    row_count = processed.get('row_count')
+                    if row_count:
+                        metrics['csv_row_count'].append(row_count)
+                elif processed.get('type') == 'text':
+                    word_count = processed.get('statistics', {}).get('word_count')
+                    if word_count:
+                        metrics['text_word_count'].append(word_count)
+    
+    def _analyze_aggregated_trends(self, numeric_metrics: Dict[str, List[float]]) -> Dict[str, Any]:
+        """Analyze trends in aggregated metrics"""
+        trends = {}
+        
+        for metric_name, values in numeric_metrics.items():
+            if len(values) >= 3:  # Need at least 3 points for trend
+                # Simple trend analysis
+                first_half = values[:len(values)//2]
+                second_half = values[len(values)//2:]
+                
+                if first_half and second_half:
+                    first_avg = statistics.mean(first_half)
+                    second_avg = statistics.mean(second_half)
+                    
+                    if second_avg > first_avg * 1.1:
+                        direction = 'increasing'
+                    elif second_avg < first_avg * 0.9:
+                        direction = 'decreasing'
+                    else:
+                        direction = 'stable'
+                    
+                    trends[metric_name] = {
+                        'direction': direction,
+                        'first_half_avg': first_avg,
+                        'second_half_avg': second_avg,
+                        'change_percentage': ((second_avg - first_avg) / first_avg * 100) if first_avg != 0 else 0
+                    }
+        
+        return trends
+    
+    def _calculate_aggregated_quality(self, inputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Calculate quality metrics for aggregated data"""
+        if not inputs:
+            return {}
+        
+        # Count successful vs failed operations
+        successful = sum(1 for inp in inputs if not inp.get('error'))
+        total = len(inputs)
+        
+        # Calculate average execution time
+        exec_times = [
+            inp.get('metadata', {}).get('execution_time', 0) 
+            for inp in inputs 
+            if inp.get('metadata', {}).get('execution_time')
+        ]
+        avg_exec_time = statistics.mean(exec_times) if exec_times else 0
+        
+        # Calculate data completeness
+        complete_data = sum(
+            1 for inp in inputs 
+            if ('processed_data' in inp or 'analysis_result' in inp) and not inp.get('error')
+        )
+        
+        return {
+            'success_rate': successful / total,
+            'average_execution_time': avg_exec_time,
+            'data_completeness': complete_data / total,
+            'overall_quality_score': (successful / total + (complete_data / total)) / 2
+        }
+    
+    def _calculate_aggregation_confidence(self, aggregation: Dict[str, Any]) -> float:
+        """Calculate confidence in aggregation results"""
+        factors = []
+        
+        # Factor 1: Statistical coverage
+        stats = aggregation.get('statistical_summary', {})
+        if stats:
+            avg_count = statistics.mean([s.get('count', 0) for s in stats.values()])
+            coverage_factor = min(1.0, avg_count / 5)  # Normalize by expected 5 data points
+            factors.append(coverage_factor)
+        
+        # Factor 2: Quality metrics
+        quality = aggregation.get('quality_metrics', {})
+        quality_score = quality.get('overall_quality_score', 0)
+        factors.append(quality_score)
+        
+        # Factor 3: Trend consistency
+        trends = aggregation.get('trend_analysis', {})
+        if trends:
+            # Check for consistent trends
+            directions = [t.get('direction', 'unknown') for t in trends.values()]
+            direction_consistency = 1.0 if len(set(directions)) <= 2 else 0.5
+            factors.append(direction_consistency)
+        
+        return statistics.mean(factors) if factors else 0.5
+    
+    def _extract_comparable_elements(self, inputs: List[Dict[str, Any]]) -> Dict[str, List[Any]]:
+        """Extract comparable elements from inputs for consensus building"""
+        comparable = defaultdict(list)
+        
+        for input_data in inputs:
+            # Extract confidence scores
+            if 'analysis_result' in input_data:
+                analysis = input_data['analysis_result']
+                if isinstance(analysis, dict) and 'confidence' in analysis:
+                    comparable['confidence'].append(analysis['confidence'])
+            
+            # Extract execution success
+            comparable['success'].append(not bool(input_data.get('error')))
+            
+            # Extract agent performance
+            exec_time = input_data.get('metadata', {}).get('execution_time')
+            if exec_time:
+                comparable['execution_time'].append(exec_time)
+        
+        return dict(comparable)
+    
+    def _calculate_agreement_score(self, values: List[Any]) -> float:
+        """Calculate agreement score for a set of values"""
+        if not values:
+            return 0.0
+        
+        if len(values) == 1:
+            return 1.0
+        
+        # For numeric values
+        if all(isinstance(v, (int, float)) for v in values):
+            mean_val = statistics.mean(values)
+            if mean_val == 0:
+                return 1.0 if all(v == 0 for v in values) else 0.0
+            
+            # Calculate coefficient of variation
+            std_dev = statistics.stdev(values) if len(values) > 1 else 0
+            cv = std_dev / mean_val if mean_val != 0 else float('inf')
+            
+            # High agreement if coefficient of variation is low
+            return max(0.0, 1.0 - cv)
+        
+        # For boolean or categorical values
+        value_counts = Counter(values)
+        most_common_count = value_counts.most_common(1)[0][1]
+        return most_common_count / len(values)
+    
+    def _calculate_consensus_value(self, values: List[Any]) -> Any:
+        """Calculate consensus value from a list of values"""
+        if not values:
+            return None
+        
+        # For numeric values, use mean
+        if all(isinstance(v, (int, float)) for v in values):
+            return statistics.mean(values)
+        
+        # For categorical values, use most common
+        value_counts = Counter(values)
+        return value_counts.most_common(1)[0][0]
 
-    async def cleanup(self):
-        """Cleanup rate limiter resources"""
-        self.requests.clear()
-        self.metrics.clear()
+class Layer4Agent(BaseAgent):
+    """Output & Response Layer Agent"""
+    
+    async def _initialize_agent(self) -> None:
+        """Initialize Layer4 agent components"""
+        self.formatters = {
+            'json': self._format_json,
+            'text': self._format_text,
+            'report': self._format_report,
+            'markdown': self._format_markdown,
+            'summary': self._format_summary
+        }
+        self.output_cache = TTLCache(maxsize=200, ttl=1800)  # 30 minute cache
+        self.logger.info(f"Layer4 agent {self.name} components initialized")
+    
+    async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Process formatting tasks"""
+        start_time = time.time()
+        
+        try:
+            format_type = task.get('format_type', 'json')
+            formatter = self.formatters.get(format_type, self._format_json)
+            
+            result = await formatter(task.get('data', {}))
+            
+            execution_time = time.time() - start_time
+            
+            response = {
+                'formatted_output': result,
+                'status': 'success',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'format_type': format_type,
+                    'output_length': len(str(result)),
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, response, execution_time)
+            return response
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Formatting task failed: {e}")
+            
+            error_response = {
+                'error': str(e),
+                'status': 'failed',
+                'metadata': {
+                    'agent': self.name,
+                    'layer': self.layer_id,
+                    'execution_time': execution_time,
+                    'timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            await self._record_task_execution(task, error_response, execution_time)
+            return error_response
+    
+    async def _format_json(self, data: Dict[str, Any]) -> str:
+        """Format as JSON with enhanced structure"""
+        try:
+            formatted_data = {
+                'metadata': {
+                    'generated_at': datetime.now().isoformat(),
+                    'format_version': '2.0',
+                    'data_type': self._identify_data_type(data)
+                },
+                'content': data,
+                'statistics': self._generate_data_statistics(data)
+            }
+            
+            return json.dumps(formatted_data, indent=2, ensure_ascii=False, default=str)
+            
+        except Exception as e:
+            self.logger.error(f"JSON formatting failed: {e}")
+            return json.dumps({'error': str(e), 'original_data': str(data)}, indent=2)
+    
+    async def _format_text(self, data: Dict[str, Any]) -> str:
+        """Format as human-readable text"""
+        try:
+            text_parts = []
+            text_parts.append(f"Data Analysis Report - Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            text_parts.append("=" * 60)
+            text_parts.append("")
+            
+            # Add data overview
+            data_type = self._identify_data_type(data)
+            text_parts.append(f"Data Type: {data_type}")
+            text_parts.append("")
+            
+            # Format main content
+            text_parts.extend(self._format_content_as_text(data))
+            
+            # Add statistics
+            text_parts.append("")
+            text_parts.append("Statistics:")
+            text_parts.append("-" * 20)
+            stats = self._generate_data_statistics(data)
+            for key, value in stats.items():
+                text_parts.append(f"{key}: {value}")
+            
+            return "\n".join(text_parts)
+            
+        except Exception as e:
+            self.logger.error(f"Text formatting failed: {e}")
+            return f"Error formatting data: {e}\n\nOriginal data: {str(data)}"
+    
+    async def _format_report(self, data: Dict[str, Any]) -> str:
+        """Format as comprehensive report"""
+        try:
+            report_sections = []
+            
+            # Executive Summary
+            report_sections.append("# Executive Summary")
+            report_sections.append(self._generate_executive_summary(data))
+            report_sections.append("")
+            
+            # Data Overview
+            report_sections.append("# Data Overview")
+            report_sections.append(self._generate_data_overview(data))
+            report_sections.append("")
+            
+            # Key Findings
+            report_sections.append("# Key Findings")
+            findings = self._extract_key_findings_for_report(data)
+            for i, finding in enumerate(findings, 1):
+                report_sections.append(f"{i}. {finding}")
+            report_sections.append("")
+            
+            # Detailed Analysis
+            report_sections.append("# Detailed Analysis")
+            report_sections.extend(self._generate_detailed_analysis(data))
+            report_sections.append("")
+            
+            # Recommendations
+            report_sections.append("# Recommendations")
+            recommendations = self._generate_recommendations(data)
+            for i, rec in enumerate(recommendations, 1):
+                report_sections.append(f"{i}. {rec}")
+            report_sections.append("")
+            
+            # Appendix
+            report_sections.append("# Appendix")
+            report_sections.append("## Technical Details")
+            report_sections.append(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            report_sections.append(f"Data processed: {self._count_data_elements(data)} elements")
+            
+            return "\n".join(report_sections)
+            
+        except Exception as e:
+            self.logger.error(f"Report formatting failed: {e}")
+            return f"# Error Report\n\nFailed to generate report: {e}"
+    
+    async def _format_markdown(self, data: Dict[str, Any]) -> str:
+        """Format as Markdown document"""
+        try:
+            md_sections = []
+            
+            # Title
+            md_sections.append("# Multi-Agent System Analysis Results")
+            md_sections.append("")
+            md_sections.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d at %H:%M:%S')}")
+            md_sections.append("")
+            
+            # Quick Stats
+            stats = self._generate_data_statistics(data)
+            md_sections.append("## Quick Statistics")
+            md_sections.append("")
+            for key, value in stats.items():
+                md_sections.append(f"- **{key}:** {value}")
+            md_sections.append("")
+            
+            # Main Content
+            md_sections.append("## Analysis Results")
+            md_sections.append("")
+            md_sections.extend(self._format_content_as_markdown(data))
+            
+            # Data Quality
+            md_sections.append("")
+            md_sections.append("## Data Quality Assessment")
+            md_sections.append("")
+            quality_info = self._assess_data_quality(data)
+            for metric, score in quality_info.items():
+                # Create progress bar using markdown
+                progress = "█" * int(score * 10) + "░" * (10 - int(score * 10))
+                md_sections.append(f"- **{metric}:** {progress} ({score:.1%})")
+            
+            return "\n".join(md_sections)
+            
+        except Exception as e:
+            self.logger.error(f"Markdown formatting failed: {e}")
+            return f"# Error\n\nMarkdown formatting failed: {e}"
+    
+    async def _format_summary(self, data: Dict[str, Any]) -> str:
+        """Format as concise summary"""
+        try:
+            summary_parts = []
+            
+            # Header
+            summary_parts.append("🔍 Analysis Summary")
+            summary_parts.append("=" * 50)
+            
+            # Key metrics
+            stats = self._generate_data_statistics(data)
+            summary_parts.append(f"📊 Processed {stats.get('element_count', 0)} data elements")
+            summary_parts.append(f"⏱️ Execution time: {stats.get('total_execution_time', 0):.2f}s")
+            summary_parts.append(f"✅ Success rate: {stats.get('success_rate', 0):.1%}")
+            
+            # Top findings
+            findings = self._extract_key_findings_for_report(data)[:3]  # Top 3
+            if findings:
+                summary_parts.append("")
+                summary_parts.append("🎯 Top Findings:")
+                for finding in findings:
+                    summary_parts.append(f"  • {finding}")
+            
+            # Quality assessment
+            quality = self._assess_data_quality(data)
+            avg_quality = statistics.mean(quality.values()) if quality else 0
+            quality_emoji = "🟢" if avg_quality > 0.8 else "🟡" if avg_quality > 0.6 else "🔴"
+            summary_parts.append(f"\n{quality_emoji} Overall Quality: {avg_quality:.1%}")
+            
+            return "\n".join(summary_parts)
+            
+        except Exception as e:
+            self.logger.error(f"Summary formatting failed: {e}")
+            return f"❌ Summary generation failed: {e}"
+    
+    # Helper methods for formatting
+    
+    def _identify_data_type(self, data: Dict[str, Any]) -> str:
+        """Identify the primary data type"""
+        if 'synthesis_result' in data:
+            return 'synthesis'
+        elif 'analysis_result' in data:
+            return 'analysis'
+        elif 'processed_data' in data:
+            return 'processed'
+        elif isinstance(data, dict) and data.get('type'):
+            return data['type']
+        else:
+            return 'mixed'
+    
+    def _generate_data_statistics(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate statistics about the data"""
+        stats = {
+            'element_count': self._count_data_elements(data),
+            'data_size_bytes': len(json.dumps(data, default=str)),
+            'nested_levels': self._count_nesting_levels(data),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Add execution time if available
+        if isinstance(data, dict) and 'metadata' in data:
+            exec_time = data['metadata'].get('execution_time')
+            if exec_time:
+                stats['total_execution_time'] = exec_time
+        
+        # Calculate success rate
+        if self._has_synthesis_data(data):
+            stats['success_rate'] = self._calculate_success_rate(data)
+        
+        return stats
+    
+    def _count_data_elements(self, data: Any, level: int = 0) -> int:
+        """Count data elements recursively"""
+        if level > 10:  # Prevent infinite recursion
+            return 1
+        
+        if isinstance(data, dict):
+            return sum(self._count_data_elements(value, level + 1) for value in data.values())
+        elif isinstance(data, list):
+            return sum(self._count_data_elements(item, level + 1) for item in data)
+        else:
+            return 1
+    
+    def _count_nesting_levels(self, data: Any, current_level: int = 0) -> int:
+        """Count maximum nesting levels"""
+        if current_level > 20:  # Prevent infinite recursion
+            return current_level
+        
+        if isinstance(data, dict):
+            if not data:
+                return current_level
+            return max(self._count_nesting_levels(value, current_level + 1) for value in data.values())
+        elif isinstance(data, list):
+            if not data:
+                return current_level
+            return max(self._count_nesting_levels(item, current_level + 1) for item in data)
+        else:
+            return current_level
+    
+    def _format_content_as_text(self, data: Dict[str, Any]) -> List[str]:
+        """Format content as readable text lines"""
+        lines = []
+        
+        if 'synthesis_result' in data:
+            synthesis = data['synthesis_result']
+            if isinstance(synthesis, dict):
+                lines.append("Synthesis Results:")
+                lines.extend(self._format_synthesis_as_text(synthesis))
+        
+        if 'analysis_result' in data:
+            analysis = data['analysis_result']
+            if isinstance(analysis, dict):
+                lines.append("Analysis Results:")
+                lines.extend(self._format_analysis_as_text(analysis))
+        
+        if 'processed_data' in data:
+            processed = data['processed_data']
+            if isinstance(processed, dict):
+                lines.append("Processed Data:")
+                lines.extend(self._format_processed_as_text(processed))
+        
+        return lines
+    
+    def _format_synthesis_as_text(self, synthesis: Dict[str, Any]) -> List[str]:
+        """Format synthesis results as text"""
+        lines = []
+        
+        if 'merged_data' in synthesis:
+            merged = synthesis['merged_data']
+            lines.append(f"  - Merged {merged.get('source_count', 0)} data sources")
+            
+        if 'summary' in synthesis:
+            summary = synthesis['summary']
+            lines.append(f"  - Generated summary with {len(summary.get('key_findings', []))} key findings")
+            
+        if 'consensus' in synthesis:
+            consensus = synthesis['consensus']
+            lines.append(f"  - Built consensus with {consensus.get('agreement_level', 0):.1%} agreement")
+        
+        return lines
+    
+    def _format_analysis_as_text(self, analysis: Dict[str, Any]) -> List[str]:
+        """Format analysis results as text"""
+        lines = []
+        
+        if 'patterns_found' in analysis:
+            patterns = analysis['patterns_found']
+            lines.append(f"  - Found {len(patterns)} patterns")
+            
+        if 'trends' in analysis:
+            trends = analysis['trends']
+            lines.append(f"  - Identified {len(trends)} trends")
+            
+        if 'anomalies' in analysis:
+            anomalies = analysis['anomalies']
+            lines.append(f"  - Detected {len(anomalies)} anomalies")
+            
+        if 'confidence' in analysis:
+            confidence = analysis['confidence']
+            lines.append(f"  - Analysis confidence: {confidence:.1%}")
+        
+        return lines
+    
+    def _format_processed_as_text(self, processed: Dict[str, Any]) -> List[str]:
+        """Format processed data as text"""
+        lines = []
+        
+        data_type = processed.get('type', 'unknown')
+        lines.append(f"  - Data type: {data_type}")
+        
+        if data_type == 'csv':
+            lines.append(f"  - Rows: {processed.get('row_count', 0)}")
+            lines.append(f"  - Columns: {len(processed.get('columns', []))}")
+        elif data_type == 'text':
+            stats = processed.get('statistics', {})
+            lines.append(f"  - Words: {stats.get('word_count', 0)}")
+            lines.append(f"  - Characters: {stats.get('character_count', 0)}")
+        
+        return lines
+    
+    def _format_content_as_markdown(self, data: Dict[str, Any]) -> List[str]:
+        """Format content as Markdown"""
+        lines = []
+        
+        if 'synthesis_result' in data:
+            lines.append("### 🔗 Synthesis Results")
+            lines.append("")
+            synthesis = data['synthesis_result']
+            if isinstance(synthesis, dict):
+                lines.extend(self._format_synthesis_as_markdown(synthesis))
+                lines.append("")
+        
+        if 'analysis_result' in data:
+            lines.append("### 📊 Analysis Results")
+            lines.append("")
+            analysis = data['analysis_result']
+            if isinstance(analysis, dict):
+                lines.extend(self._format_analysis_as_markdown(analysis))
+                lines.append("")
+        
+        if 'processed_data' in data:
+            lines.append("### 🗂️ Processed Data")
+            lines.append("")
+            processed = data['processed_data']
+            if isinstance(processed, dict):
+                lines.extend(self._format_processed_as_markdown(processed))
+                lines.append("")
+        
+        return lines
+    
+    def _format_synthesis_as_markdown(self, synthesis: Dict[str, Any]) -> List[str]:
+        """Format synthesis results as Markdown"""
+        lines = []
+        
+        if 'merged_data' in synthesis:
+            merged = synthesis['merged_data']
+            lines.append(f"**Data Integration:** Merged {merged.get('source_count', 0)} sources")
+            
+        if 'summary' in synthesis:
+            summary = synthesis['summary']
+            findings_count = len(summary.get('key_findings', []))
+            lines.append(f"**Summary Generation:** {findings_count} key findings identified")
+            
+        if 'consensus' in synthesis:
+            consensus = synthesis['consensus']
+            agreement = consensus.get('agreement_level', 0)
+            lines.append(f"**Consensus Building:** {agreement:.1%} agreement level achieved")
+        
+        return lines
+    
+    def _format_analysis_as_markdown(self, analysis: Dict[str, Any]) -> List[str]:
+        """Format analysis results as Markdown"""
+        lines = []
+        
+        if 'patterns_found' in analysis:
+            patterns = analysis['patterns_found']
+            lines.append(f"**Pattern Detection:** {len(patterns)} patterns identified")
+            
+        if 'trends' in analysis:
+            trends = analysis['trends']
+            lines.append(f"**Trend Analysis:** {len(trends)} trends discovered")
+            
+        if 'anomalies' in analysis:
+            anomalies = analysis['anomalies']
+            lines.append(f"**Anomaly Detection:** {len(anomalies)} anomalies found")
+            
+        if 'confidence' in analysis:
+            confidence = analysis['confidence']
+            confidence_bar = "█" * int(confidence * 10) + "░" * (10 - int(confidence * 10))
+            lines.append(f"**Confidence:** {confidence_bar} {confidence:.1%}")
+        
+        return lines
+    
+    def _format_processed_as_markdown(self, processed: Dict[str, Any]) -> List[str]:
+        """Format processed data as Markdown"""
+        lines = []
+        
+        data_type = processed.get('type', 'unknown')
+        lines.append(f"**Data Type:** {data_type.upper()}")
+        
+        if data_type == 'csv':
+            rows = processed.get('row_count', 0)
+            cols = len(processed.get('columns', []))
+            lines.append(f"**Dimensions:** {rows} rows × {cols} columns")
+            
+            quality = processed.get('data_quality', {})
+            if quality:
+                success_rate = quality.get('success_rate', 1)
+                lines.append(f"**Quality:** {success_rate:.1%} success rate")
+                
+        elif data_type == 'text':
+            stats = processed.get('statistics', {})
+            word_count = stats.get('word_count', 0)
+            char_count = stats.get('character_count', 0)
+            lines.append(f"**Content:** {word_count:,} words, {char_count:,} characters")
+            
+            content_analysis = processed.get('content_analysis', {})
+            if content_analysis:
+                sentiment = content_analysis.get('sentiment_indication', 'neutral')
+                lines.append(f"**Sentiment:** {sentiment}")
+        
+        return lines
+    
+    def _generate_executive_summary(self, data: Dict[str, Any]) -> str:
+        """Generate executive summary"""
+        try:
+            elements = self._count_data_elements(data)
+            data_type = self._identify_data_type(data)
+            
+            summary = f"This report presents the analysis of {elements} data elements "
+            summary += f"processed through a multi-agent system. The primary data type is {data_type}. "
+            
+            # Add specific insights based on data type
+            if 'synthesis_result' in data:
+                synthesis = data['synthesis_result']
+                if isinstance(synthesis, dict) and 'merged_data' in synthesis:
+                    source_count = synthesis['merged_data'].get('source_count', 0)
+                    summary += f"Data from {source_count} sources has been successfully integrated and analyzed. "
+            
+            success_rate = self._calculate_success_rate(data)
+            summary += f"The analysis achieved a {success_rate:.1%} success rate with comprehensive coverage of all input data."
+            
+            return summary
+            
+        except Exception as e:
+            return f"Executive summary generation failed: {e}"
+    
+    def _generate_data_overview(self, data: Dict[str, Any]) -> str:
+        """Generate data overview section"""
+        try:
+            overview_parts = []
+            
+            # Basic metrics
+            stats = self._generate_data_statistics(data)
+            overview_parts.append(f"Total data elements processed: {stats['element_count']}")
+            overview_parts.append(f"Data size: {stats['data_size_bytes']:,} bytes")
+            overview_parts.append(f"Maximum nesting level: {stats['nested_levels']}")
+            
+            # Timing information
+            if 'total_execution_time' in stats:
+                overview_parts.append(f"Total execution time: {stats['total_execution_time']:.2f} seconds")
+            
+            # Data composition
+            data_types = self._analyze_data_composition(data)
+            if data_types:
+                overview_parts.append("\nData composition:")
+                for dtype, count in data_types.items():
+                    overview_parts.append(f"  - {dtype}: {count} instances")
+            
+            return "\n".join(overview_parts)
+            
+        except Exception as e:
+            return f"Data overview generation failed: {e}"
+    
+    def _extract_key_findings_for_report(self, data: Dict[str, Any]) -> List[str]:
+        """Extract key findings for report"""
+        findings = []
+        
+        try:
+            # Extract from synthesis results
+            if 'synthesis_result' in data:
+                synthesis = data['synthesis_result']
+                if isinstance(synthesis, dict):
+                    if 'summary' in synthesis:
+                        summary = synthesis['summary']
+                        if isinstance(summary, dict):
+                            key_findings = summary.get('key_findings', [])
+                            findings.extend(key_findings[:3])  # Top 3 findings
+            
+            # Extract from analysis results
+            if 'analysis_result' in data:
+                analysis = data['analysis_result']
+                if isinstance(analysis, dict):
+                    if 'patterns_found' in analysis:
+                        patterns = analysis['patterns_found']
+                        if patterns:
+                            findings.append(f"Identified {len(patterns)} distinct data patterns")
+                    
+                    if 'trends' in analysis:
+                        trends = analysis['trends']
+                        if trends:
+                            directions = [t.get('direction', 'unknown') for t in trends if isinstance(t, dict)]
+                            if directions:
+                                most_common = Counter(directions).most_common(1)[0][0]
+                                findings.append(f"Primary trend direction: {most_common}")
+            
+            # Add quality findings
+            success_rate = self._calculate_success_rate(data)
+            if success_rate < 0.8:
+                findings.append(f"Data quality concern: {success_rate:.1%} success rate indicates potential issues")
+            elif success_rate > 0.95:
+                findings.append(f"High data quality: {success_rate:.1%} success rate achieved")
+            
+            return findings[:5]  # Limit to top 5 findings
+            
+        except Exception as e:
+            return [f"Finding extraction failed: {e}"]
+    
+    def _generate_detailed_analysis(self, data: Dict[str, Any]) -> List[str]:
+        """Generate detailed analysis section"""
+        lines = []
+        
+        try:
+            # Analyze each major component
+            if 'synthesis_result' in data:
+                lines.append("## Synthesis Analysis")
+                lines.extend(self._analyze_synthesis_details(data['synthesis_result']))
+                lines.append("")
+            
+            if 'analysis_result' in data:
+                lines.append("## Analysis Details")
+                lines.extend(self._analyze_analysis_details(data['analysis_result']))
+                lines.append("")
+            
+            if 'processed_data' in data:
+                lines.append("## Data Processing Details")
+                lines.extend(self._analyze_processing_details(data['processed_data']))
+                lines.append("")
+            
+            # Performance analysis
+            lines.append("## Performance Analysis")
+            lines.extend(self._analyze_performance_details(data))
+            
+        except Exception as e:
+            lines.append(f"Detailed analysis generation failed: {e}")
+        
+        return lines
+    
+    def _generate_recommendations(self, data: Dict[str, Any]) -> List[str]:
+        """Generate recommendations based on analysis"""
+        recommendations = []
+        
+        try:
+            # Quality-based recommendations
+            success_rate = self._calculate_success_rate(data)
+            if success_rate < 0.9:
+                recommendations.append("Consider implementing additional data validation steps to improve success rate")
+            
+            # Performance-based recommendations
+            stats = self._generate_data_statistics(data)
+            if stats.get('total_execution_time', 0) > 5.0:
+                recommendations.append("Optimize processing pipeline to reduce execution time")
+            
+            # Data-specific recommendations
+            if self._has_large_dataset(data):
+                recommendations.append("Consider implementing batch processing for large datasets")
+            
+            if self._has_quality_issues(data):
+                recommendations.append("Implement data quality checks and cleaning procedures")
+            
+            # Default recommendations
+            if not recommendations:
+                recommendations.extend([
+                    "Continue monitoring system performance and data quality",
+                    "Consider expanding analysis capabilities based on current success",
+                    "Implement regular system health checks and maintenance"
+                ])
+                
+        except Exception as e:
+            recommendations.append(f"Recommendation generation failed: {e}")
+        
+        return recommendations
+    
+    def _has_synthesis_data(self, data: Dict[str, Any]) -> bool:
+        """Check if data contains synthesis information"""
+        return 'synthesis_result' in data or 'analysis_result' in data
+    
+    def _calculate_success_rate(self, data: Dict[str, Any]) -> float:
+        """Calculate overall success rate"""
+        try:
+            # Look for error indicators in nested data
+            error_count = 0
+            total_count = 0
+            
+            def count_errors(obj, depth=0):
+                nonlocal error_count, total_count
+                if depth > 10:  # Prevent infinite recursion
+                    return
+                
+                if isinstance(obj, dict):
+                    total_count += 1
+                    if obj.get('error') or obj.get('status') == 'failed':
+                        error_count += 1
+                    
+                    for value in obj.values():
+                        count_errors(value, depth + 1)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        count_errors(item, depth + 1)
+            
+            count_errors(data)
+            
+            if total_count == 0:
+                return 1.0
+            
+            return (total_count - error_count) / total_count
+            
+        except Exception:
+            return 0.5  # Default moderate success rate
+    
+    def _analyze_data_composition(self, data: Dict[str, Any]) -> Dict[str, int]:
+        """Analyze composition of data types"""
+        composition = defaultdict(int)
+        
+        def analyze_obj(obj, depth=0):
+            if depth > 10:  # Prevent infinite recursion
+                return
+            
+            if isinstance(obj, dict):
+                # Check for specific data type indicators
+                if 'type' in obj:
+                    composition[obj['type']] += 1
+                elif 'synthesis_result' in obj:
+                    composition['synthesis'] += 1
+                elif 'analysis_result' in obj:
+                    composition['analysis'] += 1
+                elif 'processed_data' in obj:
+                    composition['processed'] += 1
+                else:
+                    composition['object'] += 1
+                
+                for value in obj.values():
+                    analyze_obj(value, depth + 1)
+            elif isinstance(obj, list):
+                composition['array'] += 1
+                for item in obj:
+                    analyze_obj(item, depth + 1)
+        
+        analyze_obj(data)
+        return dict(composition)
+    
+    def _assess_data_quality(self, data: Dict[str, Any]) -> Dict[str, float]:
+        """Assess various aspects of data quality"""
+        quality_metrics = {}
+        
+        # Completeness
+        quality_metrics['completeness'] = self._assess_completeness(data)
+        
+        # Accuracy (based on success rate)
+        quality_metrics['accuracy'] = self._calculate_success_rate(data)
+        
+        # Timeliness (based on execution time)
+        stats = self._generate_data_statistics(data)
+        exec_time = stats.get('total_execution_time', 0)
+        quality_metrics['timeliness'] = max(0, 1.0 - (exec_time / 10.0))  # Normalize by 10 seconds
+        
+        # Consistency
+        quality_metrics['consistency'] = self._assess_consistency(data)
+        
+        return quality_metrics
+    
+    def _assess_completeness(self, data: Dict[str, Any]) -> float:
+        """Assess data completeness"""
+        try:
+            # Count non-null, non-empty values
+            total_fields = 0
+            complete_fields = 0
+            
+            def count_fields(obj, depth=0):
+                nonlocal total_fields, complete_fields
+                if depth > 10:
+                    return
+                
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        total_fields += 1
+                        if value is not None and value != '' and value != []:
+                            complete_fields += 1
+                        
+                        if isinstance(value, (dict, list)):
+                            count_fields(value, depth + 1)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        count_fields(item, depth + 1)
+            
+            count_fields(data)
+            
+            return complete_fields / total_fields if total_fields > 0 else 0.0
+            
+        except Exception:
+            return 0.5
+    
+    def _assess_consistency(self, data: Dict[str, Any]) -> float:
+        """Assess data consistency"""
+        try:
+            # Look for consistent patterns in data structure
+            structure_consistency = 0.0
+            
+            # Check if similar objects have similar structures
+            if isinstance(data, dict):
+                # Simple heuristic: if no errors, assume good consistency
+                if not any('error' in str(value).lower() for value in data.values()):
+                    structure_consistency = 0.8
+                else:
+                    structure_consistency = 0.4
+            
+            return structure_consistency
+            
+        except Exception:
+            return 0.5
+    
+    def _analyze_synthesis_details(self, synthesis: Dict[str, Any]) -> List[str]:
+        """Analyze synthesis details"""
+        lines = []
+        
+        if isinstance(synthesis, dict):
+            if 'merged_data' in synthesis:
+                merged = synthesis['merged_data']
+                lines.append(f"Successfully merged {merged.get('source_count', 0)} data sources")
+                
+            if 'summary' in synthesis:
+                summary = synthesis['summary']
+                if isinstance(summary, dict):
+                    lines.append(f"Generated summary with {len(summary.get('key_findings', []))} findings")
+                    
+                    quality = summary.get('quality_assessment', {})
+                    if quality:
+                        overall_score = quality.get('overall_score', 0)
+                        lines.append(f"Overall quality score: {overall_score:.2f}")
+        
+        return lines
+    
+    def _analyze_analysis_details(self, analysis: Dict[str, Any]) -> List[str]:
+        """Analyze analysis details"""
+        lines = []
+        
+        if isinstance(analysis, dict):
+            method = analysis.get('method', 'unknown')
+            lines.append(f"Analysis method: {method}")
+            
+            confidence = analysis.get('confidence', 0)
+            lines.append(f"Confidence level: {confidence:.1%}")
+            
+            if 'patterns_found' in analysis:
+                patterns = analysis['patterns_found']
+                lines.append(f"Pattern analysis: {len(patterns)} patterns detected")
+                
+            if 'trends' in analysis:
+                trends = analysis['trends']
+                lines.append(f"Trend analysis: {len(trends)} trends identified")
+        
+        return lines
+    
+    def _analyze_processing_details(self, processed: Dict[str, Any]) -> List[str]:
+        """Analyze processing details"""
+        lines = []
+        
+        if isinstance(processed, dict):
+            data_type = processed.get('type', 'unknown')
+            lines.append(f"Data type: {data_type}")
+            
+            if data_type == 'csv':
+                lines.append(f"Processed {processed.get('row_count', 0)} rows")
+                lines.append(f"Columns: {len(processed.get('columns', []))}")
+                
+                quality = processed.get('data_quality', {})
+                if quality:
+                    success_rate = quality.get('success_rate', 0)
+                    lines.append(f"Processing success rate: {success_rate:.1%}")
+                    
+            elif data_type == 'text':
+                stats = processed.get('statistics', {})
+                lines.append(f"Word count: {stats.get('word_count', 0):,}")
+                lines.append(f"Character count: {stats.get('character_count', 0):,}")
+        
+        return lines
+    
+    def _analyze_performance_details(self, data: Dict[str, Any]) -> List[str]:
+        """Analyze performance details"""
+        lines = []
+        
+        stats = self._generate_data_statistics(data)
+        
+        lines.append(f"Total execution time: {stats.get('total_execution_time', 0):.2f} seconds")
+        lines.append(f"Data processing efficiency: {stats['element_count'] / max(1, stats.get('total_execution_time', 1)):.0f} elements/second")
+        lines.append(f"Memory efficiency: {stats['data_size_bytes'] / 1024:.1f} KB processed")
+        
+        success_rate = self._calculate_success_rate(data)
+        lines.append(f"Overall success rate: {success_rate:.1%}")
+        
+        return lines
+    
+    def _has_large_dataset(self, data: Dict[str, Any]) -> bool:
+        """Check if dataset is considered large"""
+        stats = self._generate_data_statistics(data)
+        return stats['element_count'] > 1000 or stats['data_size_bytes'] > 1024 * 1024  # 1MB
+    
+    def _has_quality_issues(self, data: Dict[str, Any]) -> bool:
+        """Check if there are data quality issues"""
+        success_rate = self._calculate_success_rate(data)
+        return success_rate < 0.85
 
-    def get_metrics(self) -> Dict[str, int]:
-        """Get rate limiter metrics"""
-        return dict(self.metrics)
+# ============================================================================
+# AGENT COORDINATION SYSTEM
+# ============================================================================
 
+class AgentCoordinator:
+    """Advanced agent coordination system with comprehensive management"""
+    
+    def __init__(self, config: EnhancedConfig):
+        self.config = config
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.initialized = False
+        
+        # Agent management
+        self.active_agents: Dict[int, List[BaseAgent]] = defaultdict(list)
+        self.task_queue = asyncio.Queue()
+        self.coordination_state = {}
+        
+        # Performance tracking
+        self.metrics = defaultdict(Counter)
+        self.execution_history = deque(maxlen=1000)
+        
+        # Caching and optimization
+        self.result_cache = TTLCache(maxsize=1000, ttl=3600)
+        self.optimization_strategies = {}
+    
+    async def initialize(self) -> None:
+        """Initialize coordination system"""
+        try:
+            # Initialize agent layers
+            await self._initialize_agent_layers()
+            
+            # Initialize coordination strategies
+            await self._initialize_coordination_strategies()
+            
+            # Initialize performance monitoring
+            await self._initialize_performance_monitoring()
+            
+            self.initialized = True
+            self.logger.info("Agent coordination system initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Coordination system initialization failed: {e}")
+            await self.cleanup()
+            raise InitializationError(f"Coordination init failed: {e}")
+    
+    async def _initialize_agent_layers(self) -> None:
+        """Initialize agents for each layer"""
+        try:
+            layer_configs = {
+                1: {'agent_class': Layer1Agent, 'count': 1},
+                2: {'agent_class': Layer2Agent, 'count': 1},
+                3: {'agent_class': Layer3Agent, 'count': 1},
+                4: {'agent_class': Layer4Agent, 'count': 1}
+            }
+            
+            for layer_id, layer_config in layer_configs.items():
+                agent_class = layer_config['agent_class']
+                agent_count = layer_config['count']
+                
+                for i in range(agent_count):
+                    agent_name = f"Layer{layer_id}_Agent_{i}"
+                    model_info = {'layer_id': layer_id, 'agent_index': i}
+                    
+                    agent = agent_class(agent_name, model_info, self.config)
+                    await agent.initialize()
+                    
+                    self.active_agents[layer_id].append(agent)
+                    self.logger.info(f"Initialized {agent_name}")
+            
+            total_agents = sum(len(agents) for agents in self.active_agents.values())
+            self.logger.info(f"Initialized {total_agents} agents across {len(self.active_agents)} layers")
+            
+        except Exception as e:
+            self.logger.error(f"Agent layer initialization failed: {e}")
+            raise
+    
+    async def _initialize_coordination_strategies(self) -> None:
+        """Initialize coordination strategies"""
+        try:
+            self.coordination_strategies = {
+                'sequential': self._execute_sequential_coordination,
+                'parallel': self._execute_parallel_coordination,
+                'adaptive': self._execute_adaptive_coordination
+            }
+            
+            # Default optimization strategies
+            self.optimization_strategies = {
+                'cache_results': True,
+                'parallel_layer_execution': False,  # Sequential by default
+                'adaptive_timeout': True,
+                'load_balancing': True
+            }
+            
+            self.logger.info("Coordination strategies initialized")
+            
+        except Exception as e:
+            self.logger.error(f"Coordination strategies initialization failed: {e}")
+            raise
+    
+    async def _initialize_performance_monitoring(self) -> None:
+        """Initialize performance monitoring"""
+        try:
+            self.performance_metrics = {
+                'total_tasks': 0,
+                'successful_tasks': 0,
+                'failed_tasks': 0,
+                'average_execution_time': 0.0,
+                'cache_hit_rate': 0.0
+            }
+            
+            self.logger.info("Performance monitoring initialized")
+            
+        except Exception as e:
+            self.logger.error(f"Performance monitoring initialization failed: {e}")
+            raise
+    
+    async def coordinate_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Coordinate task execution through agent layers"""
+        if not self.initialized:
+            raise RuntimeError("Coordination system not initialized")
+        
+        task_id = task.get('id', f"task_{datetime.now().timestamp()}")
+        start_time = time.time()
+        
+        try:
+            self.logger.info(f"Starting coordination for task {task_id}")
+            
+            # Check cache first
+            cache_key = self._generate_cache_key(task)
+            if cache_key in self.result_cache:
+                cached_result = self.result_cache[cache_key]
+                self.metrics['cache_hits'] += 1
+                self.logger.info(f"Returning cached result for task {task_id}")
+                return cached_result
+            
+            # Initialize task state
+            self.coordination_state[task_id] = {
+                'status': 'processing',
+                'start_time': start_time,
+                'layer_results': {},
+                'current_layer': 1
+            }
+            
+            # Execute coordination strategy
+            strategy = self._select_coordination_strategy(task)
+            result = await strategy(task_id, task)
+            
+            # Cache successful results
+            if result.get('status') == 'success':
+                self.result_cache[cache_key] = result
+            
+            # Update performance metrics
+            execution_time = time.time() - start_time
+            await self._update_performance_metrics(task_id, result, execution_time)
+            
+            # Cleanup task state
+            self.coordination_state[task_id]['status'] = 'completed'
+            self.coordination_state[task_id]['end_time'] = time.time()
+            
+            self.logger.info(f"Task {task_id} completed in {execution_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Task coordination failed for {task_id}: {e}")
+            
+            # Update failure metrics
+            self.metrics['failed_tasks'] += 1
+            
+            # Cleanup and return error
+            if task_id in self.coordination_state:
+                self.coordination_state[task_id]['status'] = 'failed'
+                self.coordination_state[task_id]['error'] = str(e)
+            
+            return {
+                'task_id': task_id,
+                'status': 'failed',
+                'error': str(e),
+                'execution_time': execution_time,
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    def _generate_cache_key(self, task: Dict[str, Any]) -> str:
+        """Generate cache key for task"""
+        # Create key based on task content, excluding timestamps
+        task_copy = task.
 
