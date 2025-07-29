@@ -1,0 +1,142 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miz-oki"
+version = "3.0.0"
+description = "MIZ OKI 3.0 - Multi-Agent Intelligence System"
+readme = "README.md"
+authors = [
+    {name = "Media Intelligence", email = "ceo@mediaintelligence.ai"}
+]
+license = {text = "Proprietary"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    # Core dependencies
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    
+    # Data processing
+    "pandas>=2.0",
+    "numpy>=1.24",
+    
+    # Web and API
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "httpx>=0.24",
+    "aiohttp>=3.8",
+    "requests>=2.31",
+    
+    # Database
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    
+    # Logging and monitoring
+    "structlog>=23.0",
+    "rich>=13.0",
+    
+    # AI/ML Core
+    "openai>=1.0",
+    "anthropic>=0.18",
+    "langchain>=0.1",
+    "langchain-community>=0.0.10",
+    "langchain-openai>=0.0.5",
+    
+    # Vector stores
+    "chromadb>=0.4",
+    "pinecone-client>=2.2",
+    
+    # Document processing
+    "pypdf>=3.0",
+    "python-multipart>=0.0.6",
+    
+    # Utilities
+    "click>=8.0",
+    "tenacity>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+    "pre-commit>=3.0",
+]
+
+ml = [
+    "torch>=2.0",
+    "transformers>=4.30",
+    "sentence-transformers>=2.2",
+    "scikit-learn>=1.3",
+]
+
+visualization = [
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    "plotly>=5.14",
+]
+
+[project.scripts]
+miz-oki = "app.main:main"
+miz-oki-api = "infra.api_launcher:main"
+
+[project.urls]
+Repository = "https://github.com/mediaintelligence/miz-oki"
+Documentation = "https://docs.mediaintelligence.ai/miz-oki"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "config*", "core*", "agents*", "orchestration*", "infra*"]
+exclude = ["tests*", "docs*", "examples*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "C90", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "PD", "PL"]
+ignore = ["E501", "B008", "C901", "PLR0913"]
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+[tool.coverage.run]
+source = ["app", "config", "core", "agents", "orchestration", "infra"]
+omit = ["*/tests/*", "*/examples/*"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
