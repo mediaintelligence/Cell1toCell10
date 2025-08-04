@@ -1,0 +1,10 @@
+INFO:     Started server process [11872]
+INFO:     Waiting for application startup.
+INFO:app.fastapi_app:MIZ OKI 3.0 starting up...
+INFO:app.fastapi_app:Environment: development
+INFO:app.fastapi_app:Project ID: not-set
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50139 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50232 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50268 - "GET /status HTTP/1.1" 200 OK
