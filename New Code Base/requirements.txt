@@ -1,0 +1,45 @@
+# Core dependencies
+pydantic>=2.0
+python-dotenv>=1.0
+pyyaml>=6.0
+
+# Data processing
+pandas>=2.0
+numpy>=1.24
+
+# Web and API
+fastapi>=0.100
+uvicorn[standard]>=0.23
+httpx>=0.24
+aiohttp>=3.8
+requests>=2.31
+
+# Database
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+
+# Logging and monitoring
+structlog>=23.0
+rich>=13.0
+
+# AI/ML Core
+openai>=1.0
+anthropic>=0.18
+langchain>=0.1
+langchain-community>=0.0.10
+langchain-openai>=0.0.5
+
+# Vector stores
+chromadb>=0.4
+pinecone-client>=2.2
+
+# Document processing
+pypdf>=3.0
+python-multipart>=0.0.6
+
+# Utilities
+click>=8.0
+tenacity>=8.0
+
+# Required for psutil in main.py
+psutil>=5.9

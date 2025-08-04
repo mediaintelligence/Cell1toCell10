@@ -1,0 +1,56 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app:latest'
+      - '.'
+
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app'
+
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'miz-oki-app'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--memory'
+      - '4Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '300'
+      - '--concurrency'
+      - '1000'
+      - '--max-instances'
+      - '100'
+      - '--min-instances'
+      - '1'
+      - '--set-env-vars'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,ENVIRONMENT=production,LOG_LEVEL=INFO'
+
+# Build timeout
+timeout: 1200s
+
+# Use kaniko for caching
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
