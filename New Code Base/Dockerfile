@@ -11,15 +11,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy dependency files
-COPY pyproject.toml ./
-
-# Create requirements.txt from pyproject.toml
-RUN pip install toml && \
-    python -c "import toml; \
-    data = toml.load('pyproject.toml'); \
-    deps = data['project']['dependencies']; \
-    with open('requirements.txt', 'w') as f: \
-        f.write('\n'.join(deps))"
+COPY requirements.txt ./
 
 # Install dependencies in a virtual environment
 RUN python -m venv /opt/venv
@@ -33,6 +25,7 @@ FROM python:3.11-slim
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libpq5 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -62,9 +55,9 @@ USER appuser
 # Expose port
 EXPOSE 8080
 
-# Health check
+# Health check using curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8080/health')"
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the application
 CMD ["uvicorn", "app.fastapi_app:app", "--host", "0.0.0.0", "--port", "8080"]

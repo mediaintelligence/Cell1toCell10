@@ -4,8 +4,6 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/$PROJECT_ID/miz-oki-app:$COMMIT_SHA'
-      - '-t'
       - 'gcr.io/$PROJECT_ID/miz-oki-app:latest'
       - '.'
 
@@ -13,8 +11,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
-      - '--all-tags'
-      - 'gcr.io/$PROJECT_ID/miz-oki-app'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app:latest'
 
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -24,7 +21,7 @@ steps:
       - 'deploy'
       - 'miz-oki-app'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/miz-oki-app:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/miz-oki-app:latest'
       - '--region'
       - 'us-central1'
       - '--platform'
