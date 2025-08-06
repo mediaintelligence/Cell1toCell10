@@ -1,6 +1,6 @@
 # MIZ OKI 3.0 - Multi-Agent Intelligence System for Google Cloud Notebooks
 
-## Complete Notebook Implementation
+## Complete Notebook Implementation (Fixed)
 
 ### Cell 1: Environment Setup and Dependencies
 
@@ -37,7 +37,8 @@ def install_packages():
         'google-cloud-pubsub',
         'google-cloud-logging',
         'nest-asyncio',  # Important for notebooks
-        'prometheus-client'
+        'prometheus-client',
+        'networkx'  # Added for workflow DAG
     ]
     
     print("🔧 Installing required packages...")
@@ -61,14 +62,14 @@ print("✅ Environment setup complete!")
 
 ```python
 # Cell 2: Core System Architecture
-# Core components and base classes
+# Core components and base classes with all necessary imports
 
 import asyncio
 import logging
 import json
 import yaml
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Union, Callable
+from typing import Dict, List, Any, Optional, Union, Callable, Tuple, Awaitable
 from datetime import datetime
 from pathlib import Path
 import uuid
@@ -79,6 +80,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import track
 import structlog
+from collections import deque
+import re
+import pickle
 
 # Configure structured logging
 structlog.configure(
@@ -220,7 +224,6 @@ print("✅ Core system architecture loaded!")
 # Various types of specialized agents
 
 import httpx
-from typing import Optional
 import random
 
 class DataProcessorAgent(BaseAgent):
@@ -471,7 +474,6 @@ import os
 from google.cloud import storage, firestore, pubsub_v1, logging as cloud_logging
 from google.auth import default
 from google.auth.exceptions import DefaultCredentialsError
-import json
 
 class GoogleCloudIntegration:
     """Handle Google Cloud service integrations"""
@@ -625,9 +627,7 @@ is_gcp_enabled = await check_gcp_environment()
 # Cell 5: Multi-Agent Orchestration System
 # Advanced orchestration and workflow management
 
-from typing import Callable, Awaitable
 import networkx as nx
-from collections import deque
 
 class WorkflowStep:
     """Represents a step in a workflow"""
@@ -847,11 +847,184 @@ orchestrator = MultiAgentOrchestrator()
 print("✅ Multi-agent orchestration system loaded!")
 ```
 
-### Cell 6: System Initialization and Management
+### Cell 6: System Management and Utilities
 
 ```python
-# Cell 6: System Initialization and Management
-# Initialize and manage the complete multi-agent system
+# Cell 6: System Management and Utilities
+# Complete system management with all utility classes
+
+class AgentMemory:
+    """Memory system for agents to store and retrieve information"""
+    
+    def __init__(self, max_size: int = 1000):
+        self.memory = {}
+        self.max_size = max_size
+        self.access_count = {}
+        self.logger = structlog.get_logger(name="AgentMemory")
+    
+    def store(self, key: str, value: Any, ttl: Optional[int] = None):
+        """Store information in memory"""
+        if len(self.memory) >= self.max_size:
+            # Remove least accessed item
+            least_accessed = min(self.access_count, key=self.access_count.get)
+            del self.memory[least_accessed]
+            del self.access_count[least_accessed]
+        
+        self.memory[key] = {
+            'value': value,
+            'timestamp': datetime.now(),
+            'ttl': ttl
+        }
+        self.access_count[key] = 0
+        self.logger.debug(f"Stored: {key}")
+    
+    def retrieve(self, key: str) -> Optional[Any]:
+        """Retrieve information from memory"""
+        if key in self.memory:
+            item = self.memory[key]
+            
+            # Check TTL
+            if item['ttl']:
+                age = (datetime.now() - item['timestamp']).total_seconds()
+                if age > item['ttl']:
+                    del self.memory[key]
+                    del self.access_count[key]
+                    return None
+            
+            self.access_count[key] += 1
+            return item['value']
+        
+        return None
+    
+    def search(self, pattern: str) -> List[str]:
+        """Search for keys matching a pattern"""
+        regex = re.compile(pattern)
+        return [key for key in self.memory.keys() if regex.match(key)]
+
+class TaskQueue:
+    """Priority task queue for agent tasks"""
+    
+    def __init__(self):
+        self.queue = asyncio.PriorityQueue()
+        self.task_count = 0
+        self.logger = structlog.get_logger(name="TaskQueue")
+    
+    async def add_task(self, priority: int, task: Dict[str, Any]):
+        """Add a task to the queue"""
+        self.task_count += 1
+        task_id = f"task_{self.task_count}"
+        await self.queue.put((priority, task_id, task))
+        self.logger.debug(f"Added task {task_id} with priority {priority}")
+        return task_id
+    
+    async def get_task(self) -> Optional[Tuple[int, str, Dict[str, Any]]]:
+        """Get the highest priority task"""
+        try:
+            return await asyncio.wait_for(self.queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            return None
+    
+    def size(self) -> int:
+        """Get queue size"""
+        return self.queue.qsize()
+
+class SystemMonitor:
+    """Monitor system performance and health"""
+    
+    def __init__(self):
+        self.metrics = {}
+        self.alerts = []
+        self.logger = structlog.get_logger(name="SystemMonitor")
+    
+    async def collect_metrics(self):
+        """Collect system metrics"""
+        metrics = {
+            'timestamp': datetime.now().isoformat(),
+            'cpu_percent': psutil.cpu_percent(interval=1),
+            'memory_percent': psutil.virtual_memory().percent,
+            'disk_percent': psutil.disk_usage('/').percent,
+            'agent_metrics': agent_registry.get_all_status()
+        }
+        
+        self.metrics[datetime.now().isoformat()] = metrics
+        
+        # Check for alerts
+        if metrics['cpu_percent'] > 80:
+            self.alerts.append({
+                'level': 'warning',
+                'message': f"High CPU usage: {metrics['cpu_percent']}%",
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        if metrics['memory_percent'] > 85:
+            self.alerts.append({
+                'level': 'warning',
+                'message': f"High memory usage: {metrics['memory_percent']}%",
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        return metrics
+    
+    def get_health_status(self) -> str:
+        """Get overall health status"""
+        if not self.metrics:
+            return "unknown"
+        
+        latest_metrics = list(self.metrics.values())[-1]
+        
+        if latest_metrics['cpu_percent'] > 90 or latest_metrics['memory_percent'] > 90:
+            return "critical"
+        elif latest_metrics['cpu_percent'] > 70 or latest_metrics['memory_percent'] > 70:
+            return "warning"
+        else:
+            return "healthy"
+
+class AgentCommunicationBus:
+    """Message bus for inter-agent communication"""
+    
+    def __init__(self):
+        self.subscribers = {}
+        self.message_history = deque(maxlen=1000)
+        self.logger = structlog.get_logger(name="CommunicationBus")
+    
+    def subscribe(self, agent_name: str, topics: List[str]):
+        """Subscribe an agent to topics"""
+        for topic in topics:
+            if topic not in self.subscribers:
+                self.subscribers[topic] = []
+            if agent_name not in self.subscribers[topic]:
+                self.subscribers[topic].append(agent_name)
+                self.logger.debug(f"{agent_name} subscribed to {topic}")
+    
+    async def publish(self, topic: str, message: Message):
+        """Publish a message to a topic"""
+        self.message_history.append({
+            'topic': topic,
+            'message': message,
+            'timestamp': datetime.now()
+        })
+        
+        if topic in self.subscribers:
+            for agent_name in self.subscribers[topic]:
+                agent = agent_registry.get(agent_name)
+                if agent:
+                    await agent.message_queue.put(message)
+                    self.logger.debug(f"Delivered message to {agent_name} on topic {topic}")
+
+# Global utilities - Initialize them here
+agent_memory = AgentMemory()
+task_queue = TaskQueue()
+system_monitor = SystemMonitor()
+communication_bus = AgentCommunicationBus()
+
+print("✅ System utilities loaded!")
+```
+
+### Cell 7: Main System Class
+
+```python
+# Cell 7: Main System Class
+# Complete multi-agent system manager
 
 class MultiAgentSystem:
     """Complete multi-agent system manager"""
@@ -1022,14 +1195,42 @@ class MultiAgentSystem:
 # Create global system instance
 multi_agent_system = MultiAgentSystem()
 
-print("✅ System management loaded!")
+# Utility functions
+async def save_system_state(filename: str = "system_state.pkl"):
+    """Save the current system state"""
+    state = {
+        'agents': {name: agent.get_status() for name, agent in agent_registry.agents.items()},
+        'metrics': multi_agent_system.get_metrics() if multi_agent_system.initialized else {},
+        'memory': agent_memory.memory,
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    with open(filename, 'wb') as f:
+        pickle.dump(state, f)
+    
+    console.print(f"[green]System state saved to {filename}[/green]")
+    return state
+
+async def load_system_state(filename: str = "system_state.pkl"):
+    """Load a saved system state"""
+    try:
+        with open(filename, 'rb') as f:
+            state = pickle.load(f)
+        
+        console.print(f"[green]System state loaded from {filename}[/green]")
+        return state
+    except FileNotFoundError:
+        console.print(f"[red]State file {filename} not found[/red]")
+        return None
+
+print("✅ Main system class loaded!")
 ```
 
-### Cell 7: Interactive Demo and Examples
+### Cell 8: Demo and Quick Start Functions
 
 ```python
-# Cell 7: Interactive Demo and Examples
-# Complete demonstration of the multi-agent system
+# Cell 8: Demo and Quick Start Functions
+# Interactive demo and easy-to-use functions
 
 async def run_complete_demo():
     """Run a complete demonstration of the multi-agent system"""
@@ -1114,252 +1315,15 @@ async def run_complete_demo():
     
     console.print(metrics_table)
     
-    # Step 5: GCP Integration (if available)
-    if is_gcp_enabled:
-        console.print("\n[bold blue]Step 5: Google Cloud Integration[/bold blue]")
-        
-        # Save results to GCS
-        if gcp_integration.storage_client:
-            console.print("[cyan]Saving results to Cloud Storage...[/cyan]")
-            await gcp_integration.save_to_storage(
-                'miz-oki-results',
-                f'demo_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json',
-                workflow_result
-            )
-        
-        # Save metrics to Firestore
-        if gcp_integration.firestore_client:
-            console.print("[cyan]Saving metrics to Firestore...[/cyan]")
-            await gcp_integration.save_to_firestore(
-                'system_metrics',
-                f'metrics_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
-                metrics
-            )
-    
-    # Step 6: Shutdown
-    console.print("\n[bold blue]Step 6: System Shutdown[/bold blue]")
+    # Step 5: Shutdown
+    console.print("\n[bold blue]Step 5: System Shutdown[/bold blue]")
     await multi_agent_system.shutdown()
     
     console.print("\n" + "="*60)
     console.print("[bold green]✅ DEMONSTRATION COMPLETE![/bold green]")
     console.print("="*60)
 
-# Run the demo
-await run_complete_demo()
-```
-
-### Cell 8: Advanced Features and Utilities
-
-```python
-# Cell 8: Advanced Features and Utilities
-# Additional features for production use
-
-import pickle
-from concurrent.futures import ThreadPoolExecutor
-import hashlib
-
-class AgentMemory:
-    """Memory system for agents to store and retrieve information"""
-    
-    def __init__(self, max_size: int = 1000):
-        self.memory = {}
-        self.max_size = max_size
-        self.access_count = {}
-        self.logger = structlog.get_logger(name="AgentMemory")
-    
-    def store(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Store information in memory"""
-        if len(self.memory) >= self.max_size:
-            # Remove least accessed item
-            least_accessed = min(self.access_count, key=self.access_count.get)
-            del self.memory[least_accessed]
-            del self.access_count[least_accessed]
-        
-        self.memory[key] = {
-            'value': value,
-            'timestamp': datetime.now(),
-            'ttl': ttl
-        }
-        self.access_count[key] = 0
-        self.logger.debug(f"Stored: {key}")
-    
-    def retrieve(self, key: str) -> Optional[Any]:
-        """Retrieve information from memory"""
-        if key in self.memory:
-            item = self.memory[key]
-            
-            # Check TTL
-            if item['ttl']:
-                age = (datetime.now() - item['timestamp']).total_seconds()
-                if age > item['ttl']:
-                    del self.memory[key]
-                    del self.access_count[key]
-                    return None
-            
-            self.access_count[key] += 1
-            return item['value']
-        
-        return None
-    
-    def search(self, pattern: str) -> List[str]:
-        """Search for keys matching a pattern"""
-        import re
-        regex = re.compile(pattern)
-        return [key for key in self.memory.keys() if regex.match(key)]
-
-class TaskQueue:
-    """Priority task queue for agent tasks"""
-    
-    def __init__(self):
-        self.queue = asyncio.PriorityQueue()
-        self.task_count = 0
-        self.logger = structlog.get_logger(name="TaskQueue")
-    
-    async def add_task(self, priority: int, task: Dict[str, Any]):
-        """Add a task to the queue"""
-        self.task_count += 1
-        task_id = f"task_{self.task_count}"
-        await self.queue.put((priority, task_id, task))
-        self.logger.debug(f"Added task {task_id} with priority {priority}")
-        return task_id
-    
-    async def get_task(self) -> Optional[Tuple[int, str, Dict[str, Any]]]:
-        """Get the highest priority task"""
-        try:
-            return await asyncio.wait_for(self.queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
-            return None
-    
-    def size(self) -> int:
-        """Get queue size"""
-        return self.queue.qsize()
-
-class SystemMonitor:
-    """Monitor system performance and health"""
-    
-    def __init__(self):
-        self.metrics = {}
-        self.alerts = []
-        self.logger = structlog.get_logger(name="SystemMonitor")
-    
-    async def collect_metrics(self):
-        """Collect system metrics"""
-        metrics = {
-            'timestamp': datetime.now().isoformat(),
-            'cpu_percent': psutil.cpu_percent(interval=1),
-            'memory_percent': psutil.virtual_memory().percent,
-            'disk_percent': psutil.disk_usage('/').percent,
-            'agent_metrics': agent_registry.get_all_status()
-        }
-        
-        self.metrics[datetime.now().isoformat()] = metrics
-        
-        # Check for alerts
-        if metrics['cpu_percent'] > 80:
-            self.alerts.append({
-                'level': 'warning',
-                'message': f"High CPU usage: {metrics['cpu_percent']}%",
-                'timestamp': datetime.now().isoformat()
-            })
-        
-        if metrics['memory_percent'] > 85:
-            self.alerts.append({
-                'level': 'warning',
-                'message': f"High memory usage: {metrics['memory_percent']}%",
-                'timestamp': datetime.now().isoformat()
-            })
-        
-        return metrics
-    
-    def get_health_status(self) -> str:
-        """Get overall health status"""
-        if not self.metrics:
-            return "unknown"
-        
-        latest_metrics = list(self.metrics.values())[-1]
-        
-        if latest_metrics['cpu_percent'] > 90 or latest_metrics['memory_percent'] > 90:
-            return "critical"
-        elif latest_metrics['cpu_percent'] > 70 or latest_metrics['memory_percent'] > 70:
-            return "warning"
-        else:
-            return "healthy"
-
-class AgentCommunicationBus:
-    """Message bus for inter-agent communication"""
-    
-    def __init__(self):
-        self.subscribers = {}
-        self.message_history = deque(maxlen=1000)
-        self.logger = structlog.get_logger(name="CommunicationBus")
-    
-    def subscribe(self, agent_name: str, topics: List[str]):
-        """Subscribe an agent to topics"""
-        for topic in topics:
-            if topic not in self.subscribers:
-                self.subscribers[topic] = []
-            if agent_name not in self.subscribers[topic]:
-                self.subscribers[topic].append(agent_name)
-                self.logger.debug(f"{agent_name} subscribed to {topic}")
-    
-    async def publish(self, topic: str, message: Message):
-        """Publish a message to a topic"""
-        self.message_history.append({
-            'topic': topic,
-            'message': message,
-            'timestamp': datetime.now()
-        })
-        
-        if topic in self.subscribers:
-            for agent_name in self.subscribers[topic]:
-                agent = agent_registry.get(agent_name)
-                if agent:
-                    await agent.message_queue.put(message)
-                    self.logger.debug(f"Delivered message to {agent_name} on topic {topic}")
-
-# Global utilities
-agent_memory = AgentMemory()
-task_queue = TaskQueue()
-system_monitor = SystemMonitor()
-communication_bus = AgentCommunicationBus()
-
-# Utility functions
-async def save_system_state(filename: str = "system_state.pkl"):
-    """Save the current system state"""
-    state = {
-        'agents': {name: agent.get_status() for name, agent in agent_registry.agents.items()},
-        'metrics': multi_agent_system.get_metrics(),
-        'memory': agent_memory.memory,
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    with open(filename, 'wb') as f:
-        pickle.dump(state, f)
-    
-    console.print(f"[green]System state saved to {filename}[/green]")
-    return state
-
-async def load_system_state(filename: str = "system_state.pkl"):
-    """Load a saved system state"""
-    try:
-        with open(filename, 'rb') as f:
-            state = pickle.load(f)
-        
-        console.print(f"[green]System state loaded from {filename}[/green]")
-        return state
-    except FileNotFoundError:
-        console.print(f"[red]State file {filename} not found[/red]")
-        return None
-
-print("✅ Advanced features and utilities loaded!")
-```
-
-### Cell 9: Quick Start and Usage Examples
-
-```python
-# Cell 9: Quick Start and Usage Examples
-# Easy-to-use functions for common tasks
-
+# Quick start function
 async def quick_start():
     """Quick start the multi-agent system"""
     console.print("[bold cyan]🚀 Quick Starting Multi-Agent System[/bold cyan]")
@@ -1438,25 +1402,13 @@ EXAMPLE_WORKFLOWS = {
     ]
 }
 
-# Display help
-console.print("\n" + "="*60)
-console.print("[bold magenta]MIZ OKI 3.0 - Multi-Agent System Ready![/bold magenta]")
-console.print("="*60)
-console.print("\n[bold]Quick Commands:[/bold]")
-console.print("  [cyan]await quick_start()[/cyan] - Initialize the system")
-console.print("  [cyan]await process_data({'key': 'value'})[/cyan] - Process data")
-console.print("  [cyan]await analyze_data(data)[/cyan] - Analyze data")
-console.print("  [cyan]await run_workflow(EXAMPLE_WORKFLOWS['simple_pipeline'])[/cyan] - Run workflow")
-console.print("  [cyan]await get_system_status()[/cyan] - Check system status")
-console.print("  [cyan]await run_complete_demo()[/cyan] - Run full demonstration")
-console.print("  [cyan]await shutdown_system()[/cyan] - Shutdown the system")
-console.print("\n[yellow]Run 'await quick_start()' to begin![/yellow]")
+print("✅ Demo and quick start functions loaded!")
 ```
 
-### Cell 10: Auto-Initialize and Test
+### Cell 9: Auto-Initialize and Test
 
 ```python
-# Cell 10: Auto-Initialize and Test
+# Cell 9: Auto-Initialize and Test
 # Automatically initialize the system and run a test
 
 async def auto_initialize_and_test():
@@ -1500,9 +1452,24 @@ async def auto_initialize_and_test():
     console.print("[bold green]✅ SYSTEM READY FOR USE![/bold green]")
     console.print("="*60)
     console.print("\n[yellow]The Multi-Agent System is now fully operational.[/yellow]")
-    console.print("[yellow]Use the commands from Cell 9 to interact with the system.[/yellow]")
+    console.print("[yellow]Use the commands from previous cells to interact with the system.[/yellow]")
     
     return True
+
+# Display help
+console.print("\n" + "="*60)
+console.print("[bold magenta]MIZ OKI 3.0 - Multi-Agent System Ready![/bold magenta]")
+console.print("="*60)
+console.print("\n[bold]Quick Commands:[/bold]")
+console.print("  [cyan]await auto_initialize_and_test()[/cyan] - Auto-initialize and test")
+console.print("  [cyan]await quick_start()[/cyan] - Initialize the system")
+console.print("  [cyan]await process_data({'key': 'value'})[/cyan] - Process data")
+console.print("  [cyan]await analyze_data(data)[/cyan] - Analyze data")
+console.print("  [cyan]await run_workflow(EXAMPLE_WORKFLOWS['simple_pipeline'])[/cyan] - Run workflow")
+console.print("  [cyan]await get_system_status()[/cyan] - Check system status")
+console.print("  [cyan]await run_complete_demo()[/cyan] - Run full demonstration")
+console.print("  [cyan]await shutdown_system()[/cyan] - Shutdown the system")
+console.print("\n[yellow]Run 'await auto_initialize_and_test()' to begin![/yellow]")
 
 # Auto-run initialization and test
 initialization_success = await auto_initialize_and_test()
@@ -1514,45 +1481,34 @@ else:
     console.print("\n[bold red]⚠️ System initialization failed. Please check the logs.[/bold red]")
 ```
 
-## Summary
+## Fixed Issues Summary
 
-This complete notebook implementation of MIZ OKI 3.0 provides:
+The main issues were:
+1. **Missing `Tuple` import** - Added to Cell 2 imports
+2. **`system_monitor` not defined before use** - Moved initialization to Cell 6
+3. **Cells executed out of order** - Reorganized dependencies
 
-### ✅ **Core Features**
-- Full async/await support for notebooks
-- Multi-agent architecture with specialized agents
-- Advanced workflow orchestration
-- Google Cloud integration (Storage, Firestore, Pub/Sub)
-- Real-time monitoring and metrics
-- Inter-agent communication bus
-- Memory and caching systems
+## How to Use
 
-### ✅ **Google Cloud Notebook Optimizations**
-- Automatic environment detection
-- Nested asyncio support for Jupyter
-- GCP service auto-configuration
-- Cloud-native logging and monitoring
-- Automatic credential management
+1. **Run cells 1-9 in order**
+2. The system will auto-initialize and run tests
+3. Use these commands to interact:
+   ```python
+   # Process data
+   result = await process_data({'key': 'value'})
+   
+   # Analyze data
+   insights = await analyze_data(result)
+   
+   # Run workflows
+   await run_workflow(EXAMPLE_WORKFLOWS['simple_pipeline'])
+   
+   # Check status
+   await get_system_status()
+   
+   # Full demo
+   await run_complete_demo()
+   ```
 
-### ✅ **Easy to Use**
-- Quick start functions
-- Pre-configured example workflows
-- Auto-initialization on load
-- Rich console output with tables and progress bars
-- Comprehensive error handling
+The system is now ready for use in Google Cloud notebooks!
 
-### ✅ **Production Ready**
-- Structured logging with structlog
-- Performance monitoring
-- Health checks and alerts
-- State persistence
-- Graceful shutdown
-
-### 🚀 **Getting Started**
-1. Run cells 1-10 in order
-2. System auto-initializes and runs tests
-3. Use quick commands to interact with the system
-4. Check `await get_system_status()` for monitoring
-5. Run `await run_complete_demo()` for full demonstration
-
-The system is now ready for deployment in Google Cloud notebooks and can be easily extended with additional agents and workflows!
