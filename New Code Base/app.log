@@ -8,3 +8,9 @@ INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
 INFO:     127.0.0.1:50139 - "GET /health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:50232 - "GET / HTTP/1.1" 200 OK
 INFO:     127.0.0.1:50268 - "GET /status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63241 - "GET /healthz HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:app.fastapi_app:MIZ OKI 3.0 shutting down...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11872]
